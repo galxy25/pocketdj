@@ -18,6 +18,9 @@ sealed interface DeepLink {
     /** `pocketdj://play/<kind>/<id>[?shuffle=1]` — start playback of a collection item. */
     data class Play(val kind: PlayKind, val id: String, val shuffle: Boolean) : DeepLink
 
+    /** `pocketdj://pocket/now` — play the Pocket Wheel's best match for right now (P2-POC-16). */
+    data object PocketNow : DeepLink
+
     /** `pocketdj://add?collection=<pocket:id|playlist:id>[&song=<id>]` — add a song (default: the one playing) to a collection. */
     data class AddToCollection(val collectionId: String, val songId: String?) : DeepLink
 
@@ -149,7 +152,7 @@ object DeepLinkParser {
             "album" -> nav(arg) { ShellRoute.Album(it) }
             "artist" -> nav(arg) { ShellRoute.Artist(it) }
             "playlist" -> nav(arg) { ShellRoute.Playlist(it) }
-            "pocket" -> nav(arg) { ShellRoute.Pocket(it) }
+            "pocket" -> if (arg.equals("now", ignoreCase = true)) DeepLink.PocketNow else nav(arg) { ShellRoute.Pocket(it) }
             "setlist" -> nav(arg) { ShellRoute.Setlist(it, autoplay = truthy(query["autoplay"])) }
             "search" -> {
                 val q = (query["q"] ?: arg)?.trim().orEmpty()

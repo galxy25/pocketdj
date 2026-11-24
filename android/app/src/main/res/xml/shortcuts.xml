@@ -39,6 +39,18 @@
             <extra android:name="tab" android:value="mix" />
         </intent>
     </shortcut>
+    <!-- P2-POC-16: "Play my pocket" plays the Pocket Wheel's best match for now (pocketdj://pocket/now). -->
+    <shortcut
+        android:shortcutId="play_pocket_now"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_pocket_now_short"
+        android:shortcutLongLabel="@string/shortcut_pocket_now_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="pocketdj://pocket/now"
+            android:targetPackage="com.levi.pocketdj"
+            android:targetClass="com.levi.pocketdj.MainActivity" />
+    </shortcut>
     <!-- SURF-5 App Actions custom intents. Best-effort (App Actions is being wound down); both fulfil through
          the same pocketdj:// deep links. Capabilities are not shortcuts: STATIC_COUNT is unchanged. -->
     <capability

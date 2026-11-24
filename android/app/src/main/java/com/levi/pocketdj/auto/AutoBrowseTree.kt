@@ -63,6 +63,15 @@ sealed interface AutoId {
     /** The cold-cache note row. */
     data object ForYouNote : AutoId { override val encoded = "fynote" }
 
+    /** "▶ Pocket for now" (`pocketwheel:now`, P2-POC-16): playable, the wheel's best match for right now. */
+    data object PocketNow : AutoId { override val encoded = "pocketwheel:now" }
+    /** The browsable "Pockets right now" folder (`pocketwheel:list`). */
+    data object PocketList : AutoId { override val encoded = "pocketwheel:list" }
+    /** One wheel moment in that folder (`pocketwheel:m:<token>`, token like `h08|d2|carPlay`: no ':' inside). */
+    data class PocketMoment(val key: com.levi.pocketdj.data.pockets.wheel.PocketMomentKey) : AutoId {
+        override val encoded get() = "pocketwheel:m:${key.token}"
+    }
+
     /** A Mix-tab node (SURF-9). [a]/[b] are kind-specific payloads (deck, crate key, session id). */
     data class Mix(val kind: AutoMixKind, val a: String = "", val b: String = "") : AutoId {
         override val encoded get() = "mix:${kind.token}:${enc(a)}:${enc(b)}"
@@ -101,6 +110,13 @@ sealed interface AutoId {
                 "mix" -> if (p.size == 4) {
                     AutoMixKind.fromToken(p[1])?.let { Mix(it, dec(p[2]), dec(p[3])) }
                 } else null
+                "pocketwheel" -> when {
+                    p.size == 2 && p[1] == "now" -> PocketNow
+                    p.size == 2 && p[1] == "list" -> PocketList
+                    p.size == 3 && p[1] == "m" ->
+                        com.levi.pocketdj.data.pockets.wheel.PocketMomentKey.fromToken(p[2])?.let(::PocketMoment)
+                    else -> null
+                }
                 "solo" -> if (p.size == 2) Solo(dec(p[1])) else null
                 "addto" -> if (p.size == 2) AddTo(dec(p[1])) else null
                 "addt" -> if (p.size == 4) {
@@ -182,7 +198,12 @@ class AutoBrowseTree(
     val mix: AutoMixTab? = null,
     /** The For You tab (SURF-7): frozen cached tiles. Null hides the tab. */
     val forYou: AutoForYou? = null,
+    /** P2-POC-16: "▶ Pocket for now" + "Pockets right now" at the top of the For You tab. Null = absent. */
+    val pockets: AutoPockets? = null,
 ) {
+    /** The For You tab exists when either its tiles or the pocket rows do. */
+    val hasForYouTab: Boolean get() = forYou != null || pockets != null
+
     /**
      * The host's BROWSER_ROOT_HINTS_KEY_ROOT_CHILDREN_LIMIT (null = unknown / unlimited). When the root would
      * exceed it, the Continue row folds into a top row inside Playlists.
@@ -210,6 +231,7 @@ class AutoBrowseTree(
             is AutoId.Collection -> collectionChildren(id.ref)
             is AutoId.Mix -> mix?.children(id)
             is AutoId.ForYouTile -> forYou?.tileChildren(id.tileId)
+            AutoId.PocketList -> pockets?.listChildren()
             is AutoId.AddTo -> null // resolved by AutoLibraryCallback (needs AutoAddTargets)
             else -> null
         }
@@ -235,10 +257,15 @@ class AutoBrowseTree(
             AutoId.Tab(AutoId.Tab.Which.POCKETS).encoded, "Pockets",
             browsable = true, childBrowsableStyle = AutoStyle.LIST,
         )
-        forYou?.let { out += it.tabNode() }
+        if (hasForYouTab) out += forYouTabNode()
         mix?.let { out += it.tabNode() }
         return out
     }
+
+    private fun forYouTabNode() = AutoNode(
+        AutoId.Tab(AutoId.Tab.Which.FOR_YOU).encoded, "For You",
+        browsable = true, childBrowsableStyle = AutoStyle.LIST,
+    )
 
     /** True when a held session exists and the root has no room for a Continue row beside the tabs. */
     private fun continueFolded(held: AutoHeld?): Boolean {
@@ -261,7 +288,8 @@ class AutoBrowseTree(
         val infos = when (tab) {
             AutoId.Tab.Which.PLAYLISTS -> sortedByName(data.playlists()) + sortedByName(data.sourcePlaylists())
             AutoId.Tab.Which.POCKETS -> sortedByName(data.pockets())
-            AutoId.Tab.Which.FOR_YOU -> return forYou?.children().orEmpty()
+            AutoId.Tab.Which.FOR_YOU ->
+                return pockets?.forYouRows().orEmpty() + forYou?.children().orEmpty()
         }
         if (infos.isEmpty()) {
             // Continue folded into the first Playlists row (root-limit hint): keep it even with no playlists.
@@ -339,6 +367,7 @@ class AutoBrowseTree(
             is AutoId.Song -> data.song(id.songId)?.let { songNode(id.encoded, it) }
             is AutoId.Solo -> data.song(id.songId)?.let { songNode(id.encoded, it) }
             is AutoId.Mix -> mix?.item(id)
+            AutoId.PocketNow, AutoId.PocketList, is AutoId.PocketMoment -> pockets?.item(id)
             AutoId.ForYouNote, is AutoId.ForYouTile, is AutoId.ForYouAll, is AutoId.ForYouRow -> forYou?.item(id)
             is AutoId.Empty, is AutoId.AddTo, is AutoId.AddTarget -> null
         }

@@ -134,7 +134,10 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                     }
                 }
             },
-        ).also { it.mixFacade = app.mixGraph.mixFacade } // MIX-16: the Mix drives Auto-Mix actions
+        ).also {
+            it.mixFacade = app.mixGraph.mixFacade // MIX-16: the Mix drives Auto-Mix actions
+            it.pocketWheel = { app.pocketsGraph.wheelController } // P2-POC-16: "Play my pocket" / pocketdj://pocket/now
+        }
     }
 
     /** "This song": the audible owner's track ([com.levi.pocketdj.shell.AudibleOwner]). */
@@ -239,6 +242,7 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         }
         deepLinkSeams.addToCollection = com.levi.pocketdj.shell.addLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
         deepLinkSeams.autoMix = com.levi.pocketdj.shell.autoMixLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
+        deepLinkSeams.pocketNow = com.levi.pocketdj.shell.pocketNowLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
         deepLinkSeams.playItem = com.levi.pocketdj.shell.playLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         SearchPlayBridge.handler = { request ->
             app.appScope.launch { mediaSearch.handle(request) }

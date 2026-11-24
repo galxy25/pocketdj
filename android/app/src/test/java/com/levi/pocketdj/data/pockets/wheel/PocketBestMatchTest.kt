@@ -308,6 +308,20 @@ class PocketBestMatchTest {
         assertEquals(r, c.result.value)
     }
 
+    @Test fun carOverrideRefreshLeavesThePhoneResultAlone() = runBlocking {
+        val c = controller(fixtureWheel(), tuesday0830)
+        c.motionNow = { "running" }
+        c.refresh()
+        val phoneResult = c.result.value
+        val phoneNow = c.lastNow
+        val car = c.refresh(carOverride = true)
+        assertEquals(phoneResult, c.result.value)
+        assertEquals(phoneNow, c.lastNow)
+        assertEquals(car, c.carResult.value)
+        assertEquals(CAR_PLAY, car.profile.key!!.mode)
+        assertTrue(c.momentsNow(5, car = true).size <= 5)
+    }
+
     @Test fun controllerFallsBackToMotionThenTripGuess() = runBlocking {
         val c = controller(fixtureWheel(), tuesday0830)
         c.motionNow = { "walking" }

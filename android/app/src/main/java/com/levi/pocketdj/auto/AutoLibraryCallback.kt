@@ -34,6 +34,19 @@ interface AutoPlayer {
     suspend fun playReleases(releaseIds: List<String>, shuffle: Boolean) {
         throw AutoPlayException("For You isn't available here")
     }
+
+    /**
+     * P2-POC-16: the Pocket Wheel's best match for now (car connected => carPlay mode). Goes through the same door as
+     * the phone (onboarding veto + ensureReady). A failure throws [AutoPlayException] with the speakable reason.
+     */
+    suspend fun playPocketForNow() {
+        throw AutoPlayException("Pockets aren't available here")
+    }
+
+    /** P2-POC-16: one "Pockets right now" moment. */
+    suspend fun playPocketMoment(key: com.levi.pocketdj.data.pockets.wheel.PocketMomentKey) {
+        throw AutoPlayException("Pockets aren't available here")
+    }
 }
 
 /**
@@ -56,6 +69,8 @@ class AutoLibraryCallback(
     private val recentTargets: () -> List<Pair<AutoTargetKind, String>> = { emptyList() },
     private val warmUp: () -> Unit = {},
     private val catalogReady: () -> Boolean = { true },
+    /** P2-POC-16: recompute the Pocket Wheel's answer (called on root fetch; the host decides threading). */
+    private val refreshPockets: suspend () -> Unit = {},
 ) {
     init {
         // SURF-9: the Mix tab rebuilds on facade state changes through the same notify channel.
@@ -71,6 +86,7 @@ class AutoLibraryCallback(
             warmed = true
             if (!catalogReady()) warmUp()
         }
+        refreshPocketsAndNotify()
         return tree.root()
     }
 
@@ -87,6 +103,33 @@ class AutoLibraryCallback(
         notifyLibraryChanged()
     }
 
+    private var pocketsSignature: String? = null
+    private val pocketsRefreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * "Refreshed on root": recompute the wheel's answer off the browse path, then re-notify ONLY when the rows really
+     * changed (so the notification can never loop). A failed refresh keeps the previous answer; never throws.
+     */
+    private fun refreshPocketsAndNotify() {
+        val pockets = tree.pockets ?: return
+        if (!pocketsRefreshing.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                refreshPockets()
+                val sig = pockets.signature()
+                if (sig != pocketsSignature) {
+                    pocketsSignature = sig
+                    notifyLibraryChanged()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            } finally {
+                pocketsRefreshing.set(false)
+            }
+        }
+    }
+
     fun getItem(mediaId: String): AutoNode? = tree.item(mediaId)
 
     /** For You tile drill-ins a browser has opened: re-notified with the tabs so they never go stale. */
@@ -95,6 +138,7 @@ class AutoLibraryCallback(
     fun getChildren(parentId: String, page: Int, pageSize: Int): List<AutoNode>? {
         val id = AutoId.decode(parentId)
         if (id is AutoId.ForYouTile) openForYouTiles += parentId
+        if (id is AutoId.Tab && id.tab == AutoId.Tab.Which.FOR_YOU) refreshPocketsAndNotify()
         if (id is AutoId.AddTo) {
             val all = addTargets.nodes(id.songId)
             return window(all, page, pageSize)
@@ -120,7 +164,7 @@ class AutoLibraryCallback(
     /** Collections / sign-in / held row changed: re-notify the root and tabs (and [extra] parents) with real counts. */
     fun notifyLibraryChanged(vararg extra: String) {
         if (!notifiedReady) return
-        val parents = (listOf(AutoId.Root.encoded) + AutoId.Tab.Which.entries.filter { it != AutoId.Tab.Which.FOR_YOU || tree.forYou != null }.map { AutoId.Tab(it).encoded } + openForYouTiles + extra).distinct()
+        val parents = (listOf(AutoId.Root.encoded) + AutoId.Tab.Which.entries.filter { it != AutoId.Tab.Which.FOR_YOU || tree.hasForYouTab }.map { AutoId.Tab(it).encoded } + openForYouTiles + extra).distinct()
         parents.forEach { notifyChildrenChanged(it, tree.children(it, 0, Int.MAX_VALUE)?.size ?: 0) }
     }
 
@@ -140,6 +184,8 @@ class AutoLibraryCallback(
                 val mix = tree.mix
                 if (mix == null) done() else run { mix.select(id)?.let(toast) }
             }
+            AutoId.PocketList -> done()
+            AutoId.PocketNow, is AutoId.PocketMoment -> run { playPocket(id) }
             is AutoId.ForYouTile, is AutoId.ForYouAll -> run { playForYou(id) }
             is AutoId.ForYouRow -> guardPlayable(mediaId) { playForYou(id) }
             is AutoId.Song -> guardPlayable(mediaId) { player.playSong(id.ref, id.songId) }
@@ -154,6 +200,15 @@ class AutoLibraryCallback(
                 } else fail("Couldn't add that")
             }
             else -> done()
+        }
+    }
+
+    /** Never an empty player: a failure is an [AutoPlayException] the [run] wrapper turns into a toast + car error. */
+    private suspend fun playPocket(id: AutoId) {
+        when (val plan = tree.pockets?.plan(id)) {
+            AutoPocketPlay.ForNow -> player.playPocketForNow()
+            is AutoPocketPlay.Moment -> player.playPocketMoment(plan.key)
+            null -> throw AutoPlayException("Nothing to play here yet")
         }
     }
 

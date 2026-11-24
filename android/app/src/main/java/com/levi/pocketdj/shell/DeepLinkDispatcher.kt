@@ -25,6 +25,8 @@ interface OnboardingGate {
  *    (the resolver reports the iOS-style message for an unknown id). Returns a failure message or null.
  *  - [addToCollection] / [autoMix]: SURF-5 `ShellActions.addSongToCollection` / `startAutoMix` — default says
  *    the action isn't available (never a silent drop).
+ *  - [pocketNow]: P2-POC-16 `ShellActions.playPocketForNow` (the seam posts its own snackbar) — default says it isn't
+ *    available (never a silent drop).
  *  - [joinJukebox]: JBX-2 `JoinedSessionsStore.addJoined` + open the join panel — default opens the Jukebox tab with a
  *    "coming soon" message (JBX-2 must assign this seam).
  *  - [importCollection]: SET-2/COL-15 collection import — default "Import coming soon".
@@ -35,6 +37,7 @@ interface OnboardingGate {
 class DeepLinkSeams {
     @Volatile var playItem: ((PlayKind, String, Boolean) -> String?)? = null
     @Volatile var addToCollection: ((collectionId: String, songId: String?) -> Unit)? = null
+    @Volatile var pocketNow: (() -> Unit)? = null
     @Volatile var autoMix: ((MixSource, shuffle: Boolean) -> Unit)? = null
     @Volatile var joinJukebox: ((id: String, guestBase: String?) -> Unit)? = null
     @Volatile var importCollection: ((uri: String) -> Unit)? = null
@@ -151,6 +154,10 @@ class DeepLinkDispatcher(
             is DeepLink.AutoMix -> {
                 val mix = seams.autoMix
                 if (mix != null) mix(link.source, link.shuffle) else postMessage("Auto-Mix isn't available yet")
+            }
+            DeepLink.PocketNow -> {
+                val pocket = seams.pocketNow
+                if (pocket != null) pocket() else postMessage("Pocket for now isn't available yet")
             }
             is DeepLink.Unresolved -> postMessage(link.message)
             is DeepLink.Navigate -> postRoute(link.route)

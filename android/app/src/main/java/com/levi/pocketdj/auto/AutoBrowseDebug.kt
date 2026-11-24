@@ -44,7 +44,7 @@ object AutoBrowseDebug {
                 }
                 for (p in picks) {
                     // SURF-7: `fy:<tile>` picks a For You node by media id (searched under the For You tab).
-                    val isFy = p.startsWith("fy")
+                    val isFy = p.startsWith("fy") || p.startsWith("pocketwheel")
                     val mix = children(browser, root.mediaId).firstOrNull {
                         it.mediaMetadata.title.toString().contains(if (isFy) "For You" else "Mix", true)
                     }
