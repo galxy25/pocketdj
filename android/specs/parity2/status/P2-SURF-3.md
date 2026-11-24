@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 Glance widget 👍/👎 pair + self-contained verdict commands + effective repeat.
 
@@ -22,3 +22,10 @@ Glance widget 👍/👎 pair + self-contained verdict commands + effective repea
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR WidgetBridge verdict catalog wait (10s) -> fixed: wait only while catalog Idle/Loading with no error (0 when failed/errored/ready-empty), capped at 2s; drain runs verdicts after transport commands (`WidgetVerdicts.transportFirst`). Tests: catalogWaitIsSkippedWhenItWillNotLoad, drainRunsVerdictsAfterTransportCommands.
+- MINOR widget thumbs gated on lazy NowPlayingFeedback -> fixed: recRev builds the store off-main (IO) once the sequencer is running, and wakes on sequencer start instead of a 3s poll tick.
+- NIT KDoc placement / duplicate heart helpers / test budget -> fixed: KDoc moved, shared `heartVisible`, `WidgetSizes` owns ROOT_PAD/MEDIUM_COVER/MEDIUM_GAP and usable widths used by the test (composable dp literals unchanged).
+
+fixes applied. testDebugUnitTest + assembleDebug green; 7470 tests (+2), 0 failures.
