@@ -198,3 +198,19 @@ Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave10/; seed rip
 Integrator changes: InlinePlayerPanel stale-sequencer fix + test; AutoBrowseDebug (Up Next in the dump roots, calls the shell select directly through `PlaybackService.debugSelect` instead of a media3 `setMediaItem`, which crashed the app with a media3 1.6.1 controller-side `PlayerInfo.build` IllegalStateException when the session refused the set; releases the browser after a pick); DebugScreen "Mix: log gesture taps" toggle.
 
 Open: P2Q31-P2Q35.
+
+## Wave 11
+
+Merged: P2-REM-13 (Mix Together), P2-REM-10 (internet broker), P2-SOC-2 (QR scan + link deep link), P2-SURF-12 (AppFunctions), P2-SURF-6 (search/assist/pin). Tests: 7927, 0 failures; assembleDebug green (assembleRelease passed per SOC-2/SURF-12/SURF-6 reports).
+
+Emulator (API 36, screenshots in pocketdj-parity2-pkgs/_shots/wave11/):
+- P2-REM-13 PASS: new debug button "Mix Together loopback" joins the real controller to an in-memory peer and starts Mix Together; the Mix tab shows the "Mixing together" banner (Your deck A, You / Showcase peer, Release/Claim; Release -> "No deck - claim one" and Deck A Free). Two-phone 40 ms sync: device-only, not verifiable.
+- P2-REM-10 PASS: local jukebox-server on :8791, app set to http://10.0.2.2:8791, "Over the internet" switch appeared; Listen Together created room, join code shown; a curl client joined, polled the host's state envelopes, and send was accepted. No crash.
+- P2-SOC-2 PASS: with an injected endpoints doc (green doc, offline so the live refresh does not overwrite it) `pocketdj://link/<valid code>` opens Settings with the code in the link flow; Scan code shows the camera rationale, then the system permission prompt, then a live (black emulator) preview. Without the doc the link says "Device sync isn't available yet" (dormant, as designed). Two-device link/pull: device-only.
+- P2-SURF-12 PASS: `cmd app_function` has no shell implementation on this image, but `dumpsys app_function` lists all 12 PocketDjAppFunctions as indexed by the platform. Gemini on a phone: device-only.
+- P2-SURF-6 PASS: SEARCH_ACTION (pkg-targeted) opens Browse search with "drake"; pocket menu "Add to Home screen" shows the pin dialog.
+- No FATAL EXCEPTION / ANR.
+
+Integrator changes: `ksp { arg("appfunctions:aggregateAppFunctions","true") }` in app/build.gradle.kts (app module aggregates app_functions*.xml); DebugScreen "Mix Together loopback" seed.
+
+Notes: an unqualified SEARCH_ACTION intent shows a chooser (Drive/Maps also handle it) - expected. Open: P2Q36-P2Q40.
