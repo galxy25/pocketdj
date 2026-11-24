@@ -314,7 +314,7 @@ class AutoLibraryCallback(
                 .setIsPlayable(n.playable)
                 .setExtras(extras)
             n.subtitle?.let { md.setArtist(it) }
-            AutoArtwork.httpsOrNull(n.artUrl)?.let { md.setArtworkUri(android.net.Uri.parse(it)) }
+            (AutoArtwork.httpsOrNull(n.artUrl) ?: n.artUrl?.takeIf(AutoJukeboxQr::isContentArt))?.let { md.setArtworkUri(android.net.Uri.parse(it)) }
             if (n.addToAction) md.setSupportedCommands(listOf(ACTION_ADD_TO))
             if (n.upNextActions) md.setSupportedCommands(AutoUpNext.ACTIONS)
             return MediaItem.Builder().setMediaId(n.id).setMediaMetadata(md.build()).build()

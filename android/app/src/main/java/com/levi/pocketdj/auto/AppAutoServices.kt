@@ -416,6 +416,45 @@ class AppAutoMixExtras(
         }
     }
 
+    // ---- Lead-deck live controls (iOS CarPlayModel.mixLeadDeck = the now-playing / live deck) ----
+
+    /** The lead deck read live from the engine (not the cached ui snapshot, which lags a crossfade). */
+    private fun leadDeck() = app.mixGraph.autoDj.liveDeck
+
+    override fun setupControls(): AutoMixControls? {
+        val sf = app.mixGraph.downloadStateIfBuilt()?.catalogShortfall?.let { it.declared to it.total }
+        // Reading the glide flags would build the engine: only read them once it exists; the shortfall never needs it.
+        return if (app.mixGraph.engineBuilt()) AutoMixControls(
+            fxGlide = app.mixGraph.autoDj.fxGlideEnabled, audioGlide = app.mixGraph.autoDj.mixGlideEnabled, shortfall = sf,
+        ) else if (sf != null) AutoMixControls(shortfall = sf, glideKnown = false) else null
+    }
+
+    override fun controls(): AutoMixControls? {
+        if (!facade.autoMixing) return null
+        val g = app.mixGraph
+        val dj = g.autoDj
+        val e = g.mixEngine
+        val d = leadDeck()
+        val stems = g.mixDeckExtras.stems
+        return AutoMixControls(
+            fxGlide = dj.fxGlideEnabled, audioGlide = dj.mixGlideEnabled,
+            slots = e.slots(d).map { AutoFxSlot("${it.effect.label} · ${it.variant.label}", it.enabled) },
+            rate = e.rate(d), pitch = e.pitch(d), inTransition = dj.autoTransitioning,
+            stemsOn = stems.modeOn(d), stemsLoading = stems.handover(d) != null,
+            mutedStems = AutoMixTab.STEM_LABELS.map { it.first }.filter { stems.isMuted(it, d) }.toSet(),
+            shortfall = g.downloadStateIfBuilt()?.catalogShortfall?.let { it.declared to it.total },
+        )
+    }
+
+    override fun setFxGlide(on: Boolean) { main.launch { app.mixGraph.autoDj.setFXGlide(on) } }
+    override fun setAudioGlide(on: Boolean) { main.launch { app.mixGraph.autoDj.setMixGlide(on) } }
+    override fun setSlot(index: Int, enabled: Boolean) { main.launch { app.mixGraph.mixEngine.setSlot(index, enabled, leadDeck()) } }
+    override fun setRate(rate: Double) { main.launch { app.mixGraph.mixEngine.setRate(rate, leadDeck()) } }
+    override fun setPitch(semitones: Double) { main.launch { app.mixGraph.mixEngine.setPitch(semitones, leadDeck()) } }
+    override fun setStemMode(on: Boolean) { main.launch { app.mixGraph.mixDeckExtras.stems.setStemMode(on, leadDeck()) } }
+    override fun toggleStemMute(name: String) { main.launch { app.mixGraph.mixDeckExtras.stems.toggleStemMute(name, leadDeck()) } }
+    override fun qrArtworkUri(url: String): String? = AutoJukeboxQr.artworkUri(app.appContext, url)
+
     override suspend fun jukeboxSessions(): List<AutoJukeSession>? = try {
         com.levi.pocketdj.data.jukebox.JukeboxGraph.get(app.appContext).repository.listSessions().map {
             AutoJukeSession(it.jukeboxId, it.name, it.timeless == true, it.url)
