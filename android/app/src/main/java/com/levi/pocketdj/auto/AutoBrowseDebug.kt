@@ -44,9 +44,11 @@ object AutoBrowseDebug {
                 }
                 for (p in picks) {
                     // SURF-7: `fy:<tile>` picks a For You node by media id (searched under the For You tab).
-                    val isFy = p.startsWith("fy") || p.startsWith("pocketwheel")
+                    val isUp = p.startsWith("upnext")
+                    val isFy = p.startsWith("fy") || p.startsWith("pocketwheel") || isUp
                     val mix = children(browser, root.mediaId).firstOrNull {
-                        it.mediaMetadata.title.toString().contains(if (isFy) "For You" else "Mix", true)
+                        // SURF-8: `upnext:<uid>` is found under the Up Next root row (or the folded Playlists tab).
+                        it.mediaMetadata.title.toString().contains(if (isUp) "Up Next" else if (isFy) "For You" else "Mix", true)
                     }
                     val target = mix?.let { if (isFy) findId(browser, it, p, 0) else find(browser, it, p, 0) }
                     if (target == null) { Log.d(TAG, "PICK '$p' not found"); continue }

@@ -60,6 +60,11 @@ sealed interface AutoId {
     data class ForYouRow(val tileId: String, val rowId: String) : AutoId {
         override val encoded get() = "fyrow:${enc(tileId)}:${enc(rowId)}"
     }
+    /** The browsable Up Next list (`upnext`, SURF-8). */
+    data object UpNext : AutoId { override val encoded = "upnext" }
+    /** One unplayed sequencer row (`upnext:<uid>`); identity is the row uid, so a repeated song is distinct. */
+    data class UpNextRow(val uid: String) : AutoId { override val encoded get() = "upnext:${enc(uid)}" }
+
     /** The cold-cache note row. */
     data object ForYouNote : AutoId { override val encoded = "fynote" }
 
@@ -106,6 +111,7 @@ sealed interface AutoId {
                 "fyall" -> if (p.size == 2) ForYouAll(dec(p[1]), false) else null
                 "fyshuf" -> if (p.size == 2) ForYouAll(dec(p[1]), true) else null
                 "fyrow" -> if (p.size == 3) ForYouRow(dec(p[1]), dec(p[2])) else null
+                "upnext" -> when (p.size) { 1 -> UpNext; 2 -> UpNextRow(dec(p[1])); else -> null }
                 "fynote" -> if (p.size == 1) ForYouNote else null
                 "mix" -> if (p.size == 4) {
                     AutoMixKind.fromToken(p[1])?.let { Mix(it, dec(p[2]), dec(p[3])) }
@@ -157,6 +163,8 @@ data class AutoNode(
     /** Shows the "Add to…" custom browser action on this row. */
     val addToAction: Boolean = false,
     val childCount: Int? = null,
+    /** Shows the Up Next per-row buttons (Play next / Move to end / Remove) on this row (SURF-8). */
+    val upNextActions: Boolean = false,
 )
 
 data class AutoCollectionInfo(val ref: AutoCollectionRef, val name: String, val songCount: Int, val badge: String? = null)
@@ -200,6 +208,8 @@ class AutoBrowseTree(
     val forYou: AutoForYou? = null,
     /** P2-POC-16: "▶ Pocket for now" + "Pockets right now" at the top of the For You tab. Null = absent. */
     val pockets: AutoPockets? = null,
+    /** SURF-8: the Up Next list. Null hides it. The tab shows only while rows are upcoming. */
+    val upNext: AutoUpNext? = null,
 ) {
     /** The For You tab exists when either its tiles or the pocket rows do. */
     val hasForYouTab: Boolean get() = forYou != null || pockets != null
@@ -230,6 +240,7 @@ class AutoBrowseTree(
             is AutoId.Tab -> if (!data.catalogReady) listOf(loadingNode()) else tabChildren(id.tab)
             is AutoId.Collection -> collectionChildren(id.ref)
             is AutoId.Mix -> mix?.children(id)
+            AutoId.UpNext -> upNext?.children()
             is AutoId.ForYouTile -> forYou?.tileChildren(id.tileId)
             AutoId.PocketList -> pockets?.listChildren()
             is AutoId.AddTo -> null // resolved by AutoLibraryCallback (needs AutoAddTargets)
@@ -273,12 +284,32 @@ class AutoBrowseTree(
         return held != null && tabNodes().size + 1 > limit
     }
 
+    /** True while upcoming rows exist (the Up Next entry is contextual, like iOS's Now Playing button). */
+    private fun upNextShown(): Boolean = upNext?.hasRows == true
+
+    /**
+     * Up Next folds into the top of Playlists (like Continue) when the root has no room for it. Continue keeps its
+     * root slot first, so Up Next is the one that folds when only one of them fits.
+     */
+    private fun upNextFolded(held: AutoHeld?): Boolean {
+        val limit = rootLimit ?: return false
+        if (!upNextShown()) return false
+        val continueRoot = held != null && !continueFolded(held)
+        return tabNodes().size + (if (continueRoot) 1 else 0) + 1 > limit
+    }
+
+    private fun foldedUpNext(): List<AutoNode> {
+        val u = upNext ?: return emptyList()
+        return if (upNextShown() && upNextFolded(data.held())) listOf(u.tabNode()) else emptyList()
+    }
+
     private fun rootChildren(): List<AutoNode> {
         // The catalog isn't warm yet: ONE "Loading…" child; the callback notifies the root once it is.
         if (!data.catalogReady) return listOf(loadingNode())
         val held = data.held()
-        val out = ArrayList<AutoNode>(5)
+        val out = ArrayList<AutoNode>(6)
         if (held != null && !continueFolded(held)) out += continueNode(held)
+        if (upNextShown() && !upNextFolded(held)) out += upNext!!.tabNode()
         out += tabNodes()
         val limit = rootLimit
         return if (limit != null && limit > 0 && out.size > limit) out.take(limit) else out
@@ -293,12 +324,12 @@ class AutoBrowseTree(
         }
         if (infos.isEmpty()) {
             // Continue folded into the first Playlists row (root-limit hint): keep it even with no playlists.
-            val folded = if (tab == AutoId.Tab.Which.PLAYLISTS) foldedContinue() else emptyList()
+            val folded = if (tab == AutoId.Tab.Which.PLAYLISTS) foldedUpNext() + foldedContinue() else emptyList()
             val what = if (tab == AutoId.Tab.Which.PLAYLISTS) "playlists" else "pockets"
             return folded + AutoNode(AutoId.Empty(AutoId.Tab(tab).encoded).encoded, "No $what yet")
         }
         val rows = infos.map(::collectionNode)
-        return if (tab == AutoId.Tab.Which.PLAYLISTS) foldedContinue() + rows else rows
+        return if (tab == AutoId.Tab.Which.PLAYLISTS) foldedUpNext() + foldedContinue() + rows else rows
     }
 
     private fun foldedContinue(): List<AutoNode> {
@@ -367,6 +398,7 @@ class AutoBrowseTree(
             is AutoId.Song -> data.song(id.songId)?.let { songNode(id.encoded, it) }
             is AutoId.Solo -> data.song(id.songId)?.let { songNode(id.encoded, it) }
             is AutoId.Mix -> mix?.item(id)
+            AutoId.UpNext, is AutoId.UpNextRow -> upNext?.item(id)
             AutoId.PocketNow, AutoId.PocketList, is AutoId.PocketMoment -> pockets?.item(id)
             AutoId.ForYouNote, is AutoId.ForYouTile, is AutoId.ForYouAll, is AutoId.ForYouRow -> forYou?.item(id)
             is AutoId.Empty, is AutoId.AddTo, is AutoId.AddTarget -> null

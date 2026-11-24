@@ -76,6 +76,8 @@ class PlaybackService : MediaLibraryService() {
                 forYou = com.levi.pocketdj.auto.AutoForYou(forYouSource, data::song),
                 // P2-POC-16: "▶ Pocket for now" + "Pockets right now" on top of For You.
                 pockets = com.levi.pocketdj.auto.AutoPockets(pocketsSource),
+                // SURF-8: Up Next (unplayed sequencer rows keyed by uid); the sequencer owns the queue, no Timeline.
+                upNext = com.levi.pocketdj.auto.AutoUpNext(com.levi.pocketdj.auto.AppAutoUpNextSource(app), data::song),
             ),
             addTargets = com.levi.pocketdj.auto.AutoAddTargets(com.levi.pocketdj.auto.AppAutoAddSink(app.collections)),
             player = com.levi.pocketdj.auto.AppAutoPlayer(app),
@@ -105,6 +107,13 @@ class PlaybackService : MediaLibraryService() {
             refreshPockets = { pocketsSource.refresh() },
         )
         data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
+        // SURF-8: every queue edit / advance re-notifies `upnext` (signature-filtered inside the callback).
+        app.playbackController.sequencer.hooks.add(object : com.levi.pocketdj.playback.sequencer.SequencerListener {
+            override fun onQueueChanged(generation: Long) = cb.onUpNextChanged()
+            override fun onTransition(t: com.levi.pocketdj.playback.sequencer.Transition) = cb.onUpNextChanged()
+            override fun onSessionStarted(sessionId: String, source: com.levi.pocketdj.playback.sequencer.SourceRef) = cb.onUpNextChanged()
+            override fun onSessionEnded(reason: com.levi.pocketdj.playback.sequencer.SessionEndReason) = cb.onUpNextChanged()
+        })
         // A phone-side refresh/commit of the cached feed re-notifies the open lists (the car itself never refreshes).
         // Feed commits, thumbs and the release feed all change the tiles/rows; open fy:<tile> drill-ins are re-notified
         // by the callback itself. Posted to main like every other library notification.
@@ -122,6 +131,16 @@ class PlaybackService : MediaLibraryService() {
         }
         cb
     }
+    /** SURF-8: the three Up Next per-row buttons (shown only on rows whose metadata lists the command). */
+    private fun upNextButtons(): List<CommandButton> = listOf(
+        Triple(com.levi.pocketdj.auto.AutoUpNext.ACTION_PLAY_NEXT, com.levi.pocketdj.auto.AutoUpNext.LABEL_PLAY_NEXT, CommandButton.ICON_NEXT),
+        Triple(com.levi.pocketdj.auto.AutoUpNext.ACTION_MOVE_TO_END, com.levi.pocketdj.auto.AutoUpNext.LABEL_MOVE_TO_END, CommandButton.ICON_QUEUE_NEXT),
+        Triple(com.levi.pocketdj.auto.AutoUpNext.ACTION_REMOVE, com.levi.pocketdj.auto.AutoUpNext.LABEL_REMOVE, CommandButton.ICON_MINUS),
+    ).map { (action, label, icon) ->
+        CommandButton.Builder(icon).setDisplayName(label)
+            .setSessionCommand(SessionCommand(action, android.os.Bundle.EMPTY)).build()
+    }
+
     /** Q96: off-Main work for the Auto binder callbacks (graph build, tree reads, search scoring). */
     // Serialized: the Auto tree holds check-then-act state written for one thread; stays off Main.
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -273,7 +292,7 @@ class PlaybackService : MediaLibraryService() {
                         .setDisplayName(AutoLibraryCallback.ADD_TO_LABEL)
                         .setSessionCommand(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
                         .build(),
-                ),
+                ) + upNextButtons(),
             )
             .apply { sessionActivity?.let(::setSessionActivity) }
             .build()
@@ -567,6 +586,7 @@ class PlaybackService : MediaLibraryService() {
                     add(FavoriteCommand.sessionCommand)
                     MediaButtonPrefs.commands.forEach { add(it) }
                     add(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
+                    com.levi.pocketdj.auto.AutoUpNext.ACTIONS.forEach { add(SessionCommand(it, android.os.Bundle.EMPTY)) }
                 }
             }.build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -709,6 +729,15 @@ class PlaybackService : MediaLibraryService() {
                 )
                 refreshCustomLayout()
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            if (customCommand.customAction in com.levi.pocketdj.auto.AutoUpNext.ACTIONS) {
+                // SURF-8: Up Next per-row buttons; the sequencer edit runs on Main (this callback's thread).
+                val mediaId = args.getString(MediaConstants.EXTRA_KEY_MEDIA_ID)
+                val ok = mediaId != null && auto.upNextCommand(customCommand.customAction, mediaId)
+                return Futures.immediateFuture(
+                    if (ok) SessionResult(SessionResult.RESULT_SUCCESS)
+                    else SessionResult(SessionError(SessionError.ERROR_BAD_VALUE, "That song is no longer up next")),
+                )
             }
             if (customCommand.customAction == AutoLibraryCallback.ACTION_ADD_TO) {
                 val mediaId = args.getString(MediaConstants.EXTRA_KEY_MEDIA_ID)

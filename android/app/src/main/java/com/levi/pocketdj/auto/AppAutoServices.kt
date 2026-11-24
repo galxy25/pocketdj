@@ -426,3 +426,30 @@ class AppAutoMixExtras(
         null
     }
 }
+
+/**
+ * SURF-8: the sequencer as the Up Next source. Reads the published state (a StateFlow: safe from the Auto
+ * background dispatcher); every edit is posted to Main, the sequencer's dispatcher, and is addressed by uid.
+ */
+class AppAutoUpNextSource(private val app: AppGraph) : AutoUpNextSource {
+    private val seq get() = app.playbackController.sequencer
+    private val main = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+
+    override fun upcoming(): List<AutoUpNextRow> {
+        val s = seq.state.value
+        if (!s.isRunning) return emptyList()
+        return UpNextRows.upcoming(s.queue, s.index)
+    }
+
+    override fun jump(uid: String) { main.launch { seq.jumpToUpcoming(uid) } }
+    override fun playNext(uid: String) { main.launch { seq.moveUpcomingNext(uid) } }
+    override fun moveToEnd(uid: String) { main.launch { seq.moveUpcomingToEnd(uid) } }
+    override fun remove(uid: String) { main.launch { seq.removeUpcoming(setOf(uid)) } }
+}
+
+/** Pure queue -> Up Next mapping (unit-tested). */
+object UpNextRows {
+    fun upcoming(queue: List<com.levi.pocketdj.playback.sequencer.QueueItem>, index: Int): List<AutoUpNextRow> =
+        if (index + 1 >= queue.size) emptyList()
+        else queue.subList((index + 1).coerceAtLeast(0), queue.size).map { AutoUpNextRow(it.uid, it.id, it.title, it.artist) }
+}
