@@ -77,6 +77,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.levi.pocketdj.data.activity.ActivityKind
+import kotlinx.coroutines.flow.map
 import com.levi.pocketdj.data.activity.CollectionActivityStore
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.history.PlaySource
@@ -151,11 +152,18 @@ fun HistoryScreen(
     }
     // COL-18 Pockets gate: rec engine AND pockets ON, or (once) the unanswered opt-in offer.
     LaunchedEffect(Unit) {
+        // The wheel cache reads its file on first touch: resolve it off the main thread.
+        val wheelSnapshot = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { graph.pocketsGraph.wheelCache.snapshot }
         kotlinx.coroutines.flow.combine(
             graph.browseGraph.recEnabled,
             graph.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED),
             graph.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED),
-        ) { rec, on, answered -> PocketsTabGate.tabVisible(rec, on, answered) }
+            // P2-POC-10: local history (or a non-empty wheel snapshot) alone opens the tab - the wheel needs no cloud opt-in.
+            wheelSnapshot.map { !it.isEmpty },
+            com.levi.pocketdj.data.history.PlayHistoryStore.get(context).state.map { it.events.isNotEmpty() },
+        ) { rec, on, answered, snap, hist ->
+            PocketsTabGate.tabVisible(rec, on, answered, historyNonEmpty = com.levi.pocketdj.ParityFlags.POCKET_WHEEL && (snap || hist))
+        }
             .collect { HistoryTabGate.pocketsEnabled.value = it }
     }
     // The open pocket / pattern detail is hosted here (History owns the tab), like the For You list.
@@ -296,7 +304,10 @@ fun HistoryScreen(
                     )
                 },
             )
-            HistoryTab.POCKETS -> ListeningPocketsScreen(
+            HistoryTab.POCKETS -> if (com.levi.pocketdj.ParityFlags.POCKET_WHEEL) PocketsTabScreen(
+                onOpen = { pocketKey = it },
+                modifier = Modifier.testTag("history-pockets"),
+            ) else ListeningPocketsScreen(
                 onOpen = { pocketKey = it },
                 modifier = Modifier.testTag("history-pockets"),
             )

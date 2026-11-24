@@ -30,8 +30,8 @@ object ParityFlags {
     @Volatile var DEBUG_FORCE_DJ_MODE: Boolean = false
 
     /**
-     * P2-POC-9: the Pocket wheel inside History > Pockets (Wheel | List). `false` until P2-POC-10 hosts it there.
+     * P2-POC-9: the Pocket wheel inside History > Pockets (Wheel | List). Flipped to `true` by P2-POC-10, which hosts it there.
      * Debug > "Wheel preview" ignores this flag.
      */
-    val POCKET_WHEEL: Boolean get() = false
+    val POCKET_WHEEL: Boolean get() = true
 }
