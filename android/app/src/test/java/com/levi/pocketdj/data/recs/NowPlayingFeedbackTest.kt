@@ -112,20 +112,22 @@ class NowPlayingFeedbackTest {
         assertTrue(store.state.value.pockets.isEmpty() && store.state.value.playlists.isEmpty())
     }
 
+    private fun rows(vararg ids: String) = ids.map { com.levi.pocketdj.data.collections.SetlistTrack(songId = it, name = it) }
+
     @Test fun playbackReplacedRetiresScopeThenTileRestampsAfter() {
         val f = File(tmp, CollectionsStore.FILE_NAME)
         val store = CollectionsStore(f, now = { 1_750_000_000_000.0 }, writer = VersionedJsonWriter(f))
         store.onPlaybackReplaced = { fb.endPlaybackScope() }
         fb.beginPlayback("col1", listOf("a", "b"))
         // a normal play replaces the queue -> the scope dies with it
-        store.playNow(listOf("a", "b"), "Mix", sourceToken = "browser")
+        store.playNowRows(rows("a", "b"), "Mix")
         assertNull(fb.scopeForPlaying("a"))
         // a tile play: playNow FIRST (retires), beginPlayback AFTER (iOS order) -> scope survives
-        store.playNow(listOf("a", "b"), "Tile", sourceToken = "browser")
+        store.playNowRows(rows("a", "b"), "Tile")
         fb.beginPlayback("col1", listOf("a", "b"))
         assertEquals("col1", fb.scopeForPlaying("a"))
         // the wrong (pre-fix) order would have lost it
-        store.playNow(listOf("a"), "Other", sourceToken = "browser")
+        store.playNowRows(rows("a"), "Other")
         assertNull(fb.scopeForPlaying("a"))
     }
 }
