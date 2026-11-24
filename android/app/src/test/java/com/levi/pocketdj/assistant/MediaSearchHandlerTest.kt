@@ -97,8 +97,8 @@ class MediaSearchHandlerTest {
     fun noMatch_landsOnBrowseWithTheQuery() {
         val r = resolve("  something else ", pool = listOf(pk("pk", "Warmup")))
         assertEquals(MediaSearchResult.Browse("something else"), r)
-        // A partial token ("warm") is NOT coverage of "warmup".
-        assertEquals(MediaSearchResult.Browse("warm"), resolve("warm", pool = listOf(pk("pk", "Warmup"))))
+        // Initials / subsequence never match (922ea73c).
+        assertEquals(MediaSearchResult.Browse("wu"), resolve("wu", pool = listOf(pk("pk", "Warmup"))))
     }
 
     @Test
