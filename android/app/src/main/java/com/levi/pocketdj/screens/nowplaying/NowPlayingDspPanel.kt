@@ -120,7 +120,10 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
             DspSlider("Tempo", DspPanelText.tempo(ui.rate), ui.rate, MixRanges.rate, "np-mix-tempo") { v -> touch { it.setRate(v) } }
             DspSlider("Pitch", DspPanelText.pitch(ui.pitch), ui.pitch, MixRanges.pitch, "np-mix-pitch") { v -> touch { it.setPitch(v) } }
             DspSlider("Gain", DspPanelText.gain(ui.volume), ui.volume, MixRanges.volume, "np-mix-gain") { v -> touch { it.setVolume(v) } }
-            Text("Effects", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Effects", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                FxLockCapsule(ui.fxLock.enabled, ui.fxIndicator, onToggle = { host.setFxLock(!ui.fxLock.enabled) })
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 for (e in Effect.entries) {
                     FilterChip(

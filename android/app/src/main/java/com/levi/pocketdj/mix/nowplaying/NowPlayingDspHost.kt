@@ -64,6 +64,8 @@ data class DspUiState(
     val volumes: Map<String, Double> = emptyMap(),
     val lock: StemLockState = StemLockState(),
     val indicator: StemLock.Indicator = StemLock.Indicator.OFF,
+    val fxLock: FxLockState = FxLockState(),
+    val fxIndicator: FxLock.Indicator = FxLock.Indicator.OFF,
     val tick: Int = 0,
 )
 
@@ -78,6 +80,8 @@ class NowPlayingDspHost(
     private val ports: DspHostPorts,
     /** Re-plan the prefetch lane (production wires `StemLockPrefetcher.plan`); called on lock/track/queue changes. */
     private val replan: () -> Unit = {},
+    /** The session-scoped FX Lock carry (P2-FX-1); production shares it with the session writer. */
+    val fxLock: FxLockSession = FxLockSession(),
 ) {
     private val _ui = MutableStateFlow(DspUiState())
     val ui: StateFlow<DspUiState> = _ui.asStateFlow()
@@ -92,6 +96,7 @@ class NowPlayingDspHost(
     init {
         engine.onChanged = { publish() }
         engine.onUserStemChange = { stemControlsChangedByUser() }
+        engine.onUserEffectChange = { effectsChangedByUser() }
         engine.onStemsOnAir = { id -> StemLock.log("handover song=$id full mix -> stems @${"%.2f".format(java.util.Locale.US, engine.currentTimeSec)}s") ; publish() }
         engine.onReachedEnd = {
             val id = engine.engagedSongId
@@ -99,6 +104,7 @@ class NowPlayingDspHost(
                 // Leave the graph FIRST so a repeat/advance is driven by ExoPlayer (iOS handleDSPEnded).
                 engine.disengage()
                 engine.resetControls()
+                stampFxIfIdle()
                 ports.engineEnded()
                 publish()
                 ports.advanceAfterEnd(id)
@@ -151,12 +157,13 @@ class NowPlayingDspHost(
         carryPending = null
         if (engine.isEngaged && engine.engagedSongId != songId) engine.disengage()
         engine.resetControls()
+        stampFxIfIdle()   // the carry IS the control state while idle: the panel shows it, the next engage ramps it in
         lock.trackStarted()
         publish()
         replan()
         // The carry engages only once ExoPlayer has LOADED this row (a load yields/pauses the DSP owner and
         // the controller still holds the previous row until then): pending until [carryIfReady] sees it.
-        if (songId != null && lock.current.enabled) carryPending = songId
+        if (songId != null && (lock.current.enabled || fxLock.current.enabled)) carryPending = songId
         carryIfReady()
     }
 
@@ -164,10 +171,10 @@ class NowPlayingDspHost(
     suspend fun carryIfReady() {
         val id = carryPending ?: return
         if (ports.currentSongId != id) { carryPending = null; return }
-        if (isEngagedFor(id)) { carryPending = null; return } // P2-MM-8: a growing start engaged the row itself (stems follow its completion)
+        if (isEngagedFor(id)) { carryPending = null; return } // P2-MM-8: a growing start engaged the row itself (stems follow its completion; the engage ramped the effects in)
         if (ports.loadedSongId != id) return
         carryPending = null
-        engageLock.withLock { applyLockOnTrackStart(id) }
+        engageLock.withLock { applyLocksOnTrackStart(id) }
         publish()
     }
 
@@ -181,12 +188,83 @@ class NowPlayingDspHost(
      */
     suspend fun engageForHandOff(songId: String, atMs: Long): Boolean = engageLock.withLock {
         val st = lock.current
-        if (ports.currentSongId != songId || !st.enabled || !st.wantsStems || !st.stemsOn || ports.heldForResume || ports.mixSessionActive) return@withLock false
+        if (ports.currentSongId != songId || ports.heldForResume || ports.mixSessionActive) return@withLock false
+        if (!(st.enabled && st.wantsStems && st.stemsOn) && !fxLock.current.wantsFX) return@withLock false
         if (isEngagedFor(songId)) return@withLock true
-        applyLockOnTrackStart(songId, atMs / 1000.0)
+        applyLocksOnTrackStart(songId, atMs / 1000.0)
         publish()
         isEngagedFor(songId)
     }
+
+    /** iOS `applyLocksOnTrackStart`: the Stem Lock first, the FX Lock last (both ride the same engage). */
+    private suspend fun applyLocksOnTrackStart(songId: String?, atSeconds: Double = 0.0) {
+        applyLockOnTrackStart(songId, atSeconds)
+        applyFxLockOnTrackStart(songId, atSeconds)
+    }
+
+    /**
+     * iOS `applyFXLockOnTrackStart`: locked with an effect ON, a mixable row is handed to the DSP at once so the
+     * carried effects ramp in from its first second. A row the DSP cannot own plays dry (WAITING); a live Mix tab
+     * leaves the lock DORMANT; a file the DSP cannot open stays on ExoPlayer.
+     */
+    private suspend fun applyFxLockOnTrackStart(songId: String?, atSeconds: Double) {
+        val st = fxLock.current
+        if (!st.enabled || songId == null || ports.heldForResume) return
+        if (!st.wantsFX) { FxLock.log("carry song=$songId fx=none -> dry"); return }
+        if (isEngagedFor(songId)) { FxLock.log("carry song=$songId ${st.logSummary} -> on the DSP (engaged at start)"); return }
+        if (ports.mixSessionActive) { FxLock.log("carry song=$songId ${st.logSummary} -> DORMANT (Mix tab live) - dry, lock kept"); return }
+        if (ports.appleMusicActive || ports.resolve(songId) == null) {
+            val why = if (ports.appleMusicActive) "Apple Music" else "not a local file"
+            FxLock.log("carry song=$songId ${st.logSummary} -> WAITING ($why) - dry, lock kept")
+            return
+        }
+        fxLock.applying = true
+        try {
+            if (!engageLocked(atSeconds, ports.playWanted)) {
+                FxLock.log("carry song=$songId ${st.logSummary} -> WAITING (DSP refused the file) - dry, lock kept")
+                return
+            }
+            // The engage ramped the stamped effects in; if anything moved the control state in between, the carry wins.
+            if (engine.effectSettings() != st.effects) engine.applyCarriedEffects(st.effects)
+            FxLock.log("carry song=$songId ${st.logSummary} -> engaged at start (ramp ${(engine.fxRampSeconds * 1000).toInt()}ms)")
+        } finally { fxLock.applying = false }
+    }
+
+    /** The DSP is idle (between engagements): its control state IS the carry. */
+    private fun stampFxIfIdle() {
+        if (!fxLock.current.enabled || engine.isEngaged) return
+        fxLock.applying = true
+        try { engine.applyCarriedEffects(fxLock.current.effects) } finally { fxLock.applying = false }
+    }
+
+    /** A held restore delivered the lock: show/stamp its effects on the idle DSP. */
+    fun restoreFxStamp() { stampFxIfIdle(); publish(); replan() }
+
+    private fun effectsChangedByUser() {
+        val wanted = fxLock.current.wantsFX
+        val changed = fxLock.onUserEffectChange(engine.effectSettings())
+        if (changed) {
+            FxLock.log("carry updated mid-track song=${engine.engagedSongId ?: "-"} ${fxLock.current.logSummary}")
+            // Only an effect switching the lock between "carries something" and "nothing" changes the lane.
+            if (fxLock.current.wantsFX != wanted) replan()
+        }
+        publish()
+    }
+
+    /** The FX lock capsule: ON captures the current effects as the carry; OFF forgets them. No-op without a running track. */
+    fun setFxLock(on: Boolean) {
+        if (ports.currentSongId == null) return
+        fxLock.setLock(on, if (on) engine.effectSettings() else emptyMap())
+        // Off with the DSP idle: a stamped carry nobody hears yet must not leak into the next engage.
+        if (!on && !engine.isEngaged) engine.resetControls()
+        FxLock.log("lock ${if (on) "ON" else "OFF"} song=${ports.currentSongId ?: "-"}${if (on) " carry " + fxLock.current.logSummary else ""}")
+        publish(); replan()
+    }
+
+    fun fxIndicator(): FxLock.Indicator = FxLockSession.indicator(
+        fxLock.current, ports.currentSongId, ports.heldForResume,
+        engaged = engine.isEngaged && engine.engagedSongId == ports.currentSongId, mixSessionActive = ports.mixSessionActive,
+    )
 
     /** iOS `applyStemLockOnTrackStart`: a locked track starts on the FULL MIX and hands over once the enabled parts are on disk. */
     private suspend fun applyLockOnTrackStart(songId: String?, atSeconds: Double = 0.0) {
@@ -230,7 +308,12 @@ class NowPlayingDspHost(
     }
 
     /** A new session / stop: unlocked, nothing carried, nothing downloading for it. */
-    fun sessionEnded() { lock.reset(); lastTrackSongId = null; publish(); replan() }
+    fun sessionEnded() {
+        val hadFx = fxLock.current.enabled
+        lock.reset(); fxLock.reset(); lastTrackSongId = null
+        if (hadFx && !engine.isEngaged) engine.resetControls()   // an idle DSP drops a stamped carry
+        publish(); replan()
+    }
 
     fun indicator(): StemLock.Indicator = StemLockSession.indicator(
         lock.current, ports.currentSongId, ports.heldForResume, lock.unavailableSongId,
@@ -254,7 +337,7 @@ class NowPlayingDspHost(
             stemMode = engine.stemMode, stemHandover = engine.stemHandover,
             stemsObtainable = id != null && (engine.isEngaged || ports.resolve(id) != null) && stemsObtainable(id),
             muted = engine.mutedStems, volumes = engine.stemVolumes,
-            lock = lock.current, indicator = indicator(), tick = ++version,
+            lock = lock.current, indicator = indicator(), fxLock = fxLock.current, fxIndicator = fxIndicator(), tick = ++version,
         )
     }
 
