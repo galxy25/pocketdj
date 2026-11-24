@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-10 - Internet broker transport over the jukebox server (/remote long-poll routes)
 
@@ -28,3 +28,11 @@ state: implemented
 ## Questions for Levi
 - Deploy the jukebox-server /remote broker routes to jukebox.pocket-dj.com so Remote works over the internet (and later iOS<->Android)? Default taken: local build + tests only.
 - Should scanning an invite QR auto-pick the internet path (e.g. a distinct URL host/prefix for broker codes)? Today the "Over the internet" switch decides.
+
+## Review
+- MAJOR sendLoop treats 404 as session gone -> fixed. Client: a send ends the session only on 401/410; 404/409 drops that message. Server: unknown recipient now 409. Tests: anUnknownRecipientSendDoesNotEndTheSession, aSendRejectedAs410EndsTheSession (Kotlin) + updated node route test.
+- MINOR late joiner replays history -> fixed. Join returns `cursor` (room seq); the transport's first poll starts from it. Tests: pollStartsFromTheJoinCursor, node "join returns the room cursor".
+- MINOR invite transport ambiguity -> fixed. Broker invites use `pocketdj://remote/join-net/<code>`; the parser flags `RemoteJoin.internet`, RemoteScreen picks the starter from it (message if no server is set). Tests in DeepLinkRemoteJoinTest.
+- NIT rate limit before auth -> fixed (limit now after bearer check); node test added.
+
+fixes applied. Verified: node route tests 20/20; gradle testDebugUnitTest + assembleDebug green (7862 tests, 0 failures).

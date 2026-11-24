@@ -46,7 +46,7 @@ sealed interface DeepLink {
     data class DiagKey(val uri: String) : DeepLink
 
     /** P2-REM-9: `pocketdj://remote/join/<token>` (the Nearby invite QR). */
-    data class RemoteJoin(val token: String) : DeepLink
+    data class RemoteJoin(val token: String, val internet: Boolean = false) : DeepLink
 
     /** `pocketdj://create-pocket[?brief=...]` — build a pocket from a brief; no brief opens the Collections "Create pocket" sheet. */
     data class CreatePocket(val brief: String?) : DeepLink
@@ -168,9 +168,9 @@ object DeepLinkParser {
                 DeepLink.CreatePocket((query["brief"] ?: query["q"])?.trim()?.takeIf { it.isNotEmpty() })
             "remote" -> when {
                 arg == null -> DeepLink.Remote(null)
-                arg.equals("join", ignoreCase = true) ->
+                arg.equals("join", ignoreCase = true) || arg.equals("join-net", ignoreCase = true) ->
                     parts.getOrNull(2)?.trim()?.takeIf { REMOTE_TOKEN_RE.matches(it) }
-                        ?.let { DeepLink.RemoteJoin(if (it.length <= 8) it.uppercase() else it) }
+                        ?.let { DeepLink.RemoteJoin(if (it.length <= 8) it.uppercase() else it, internet = arg.equals("join-net", ignoreCase = true)) }
                         ?: if (parts.getOrNull(2) == null) DeepLink.Remote(null) else DeepLink.None
                 else -> DeepLink.None
             }

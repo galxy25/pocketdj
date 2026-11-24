@@ -191,6 +191,33 @@ class BrokerRemoteTransportTest {
         t.leave()
     }
 
+    @Test fun anUnknownRecipientSendDoesNotEndTheSession() {
+        script("send", json("""{"error":"unknown recipient"}""", 404), json("""{"error":"unknown recipient"}""", 409))
+        val t = transport(); t.start()
+        t.send(env("a"), RemoteRecipient.Participant("gone"), reliable = true)
+        t.send(env("b"), RemoteRecipient.Participant("gone"), reliable = true)
+        t.send(env("c"), RemoteRecipient.All, reliable = true)
+        await { while (requests("send").size < 3) kotlinx.coroutines.delay(10) }
+        assertEquals(listOf("a", "b", "c"), requests("send").map { body(it)["env"]!!.jsonObject["kind"]!!.jsonPrimitive.content })
+        assertTrue(t.participants.value.isNotEmpty())
+        t.leave()
+    }
+
+    @Test fun aSendRejectedAs410EndsTheSession() {
+        script("send", json("""{"error":"left"}""", 410))
+        val t = transport(); t.start()
+        t.send(env("a"), RemoteRecipient.All, reliable = true)
+        await { t.participants.first { it.isEmpty() } }
+    }
+
+    @Test fun pollStartsFromTheJoinCursor() {
+        val t = BrokerRemoteTransport(api(), "abcd2345", "me", "sekret", scope, initialSince = 42, backoffMs = { 10L }, log = {})
+        t.start()
+        await { while (requests("poll").isEmpty()) kotlinx.coroutines.delay(10) }
+        assertTrue(requests("poll").first().path!!.contains("since=42"))
+        t.leave()
+    }
+
     @Test fun aRejectedSendIsNotRetried() {
         script("send", json("""{"error":"bad envelope"}""", 400))
         val t = transport(); t.start()
@@ -237,7 +264,7 @@ class BrokerRemoteTransportTest {
         script("join", json("""{"participantId":"me","secret":"s1"}"""))
         val c = controller(); val s = starter(c)
         val out = await { s.start(RemoteSessionMode.LISTEN_TOGETHER) } as com.levi.pocketdj.screens.remote.StartOutcome.Started
-        assertEquals("K7Q2M9XA", out.invite!!.code); assertEquals("pocketdj://remote/join/K7Q2M9XA", out.invite!!.url)
+        assertEquals("K7Q2M9XA", out.invite!!.code); assertEquals("pocketdj://remote/join-net/K7Q2M9XA", out.invite!!.url)
         assertEquals(out.invite, s.invite.value)
         assertTrue(c.isActive.value); assertTrue(c.isHost)
         assertEquals("Bearer hs", requests("join").single().getHeader("Authorization"))

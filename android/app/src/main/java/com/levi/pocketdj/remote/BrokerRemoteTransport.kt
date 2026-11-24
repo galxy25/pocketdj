@@ -33,7 +33,7 @@ import kotlin.coroutines.resumeWithException
 // ---- Wire bodies of the jukebox server's `/remote` long-poll relay (scripts/jukebox-server.mjs). Lenient on read. ----
 
 @Serializable data class BrokerCreated(val roomId: String, val joinCode: String, val hostSecret: String)
-@Serializable data class BrokerJoined(val participantId: String, val secret: String, val mode: String? = null)
+@Serializable data class BrokerJoined(val participantId: String, val secret: String, val mode: String? = null, val cursor: Long = 0)
 @Serializable data class BrokerRosterEntry(val id: String, val name: String = "")
 @Serializable data class BrokerEvent(val seq: Long, val from: String, val to: String = "all", val reliable: Boolean = true, val env: RemoteEnvelope)
 @Serializable data class BrokerPoll(
@@ -141,6 +141,8 @@ class BrokerRemoteTransport(
     override val localParticipantId: String,
     private val secret: String,
     private val scope: CoroutineScope,
+    /** The room cursor the join returned: history before we arrived is not ours to replay. */
+    private val initialSince: Long = 0,
     private val maxPollFailures: Int = 6,
     private val backoffMs: (attempt: Int) -> Long = { minOf(500L shl (it - 1).coerceIn(0, 4), 8_000L) },
     private val log: (String) -> Unit = { NPLog.lane(NPLog.REMOTE, it) },
@@ -179,7 +181,7 @@ class BrokerRemoteTransport(
     }
 
     private suspend fun pollLoop() {
-        var since = 0L
+        var since = initialSince
         var rev = -1L
         var failures = 0
         while (!finished) {
@@ -217,7 +219,8 @@ class BrokerRemoteTransport(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    if (e is BrokerHttpException && e.isGone) { finish(); return }
+                    // Only 401/410 end the session on a send. A 404/409 is "unknown recipient" (a guest just left): drop that message, keep the room.
+                    if (e is BrokerHttpException && (e.status == 401 || e.status == 410)) { finish(); return }
                     // A bad request is our bug, not the network's: retrying can't help. Unreliable messages are never retried.
                     val retryable = m.reliable && !(e is BrokerHttpException && e.status in 400..499)
                     attempt++

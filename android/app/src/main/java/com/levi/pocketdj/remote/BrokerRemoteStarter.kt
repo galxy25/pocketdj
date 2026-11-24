@@ -42,7 +42,7 @@ class BrokerRemoteStarter(
             val room = api.create(mode)
             val id = newParticipantId()
             val me = api.join(room.roomId, id, deviceName(), null, room.hostSecret)
-            val transport = BrokerRemoteTransport(api, room.roomId, me.participantId, me.secret, scope, log = log)
+            val transport = BrokerRemoteTransport(api, room.roomId, me.participantId, me.secret, scope, initialSince = me.cursor, log = log)
             controller.attach(transport, mode, asHost = true)
             transport.start()
             val invite = RemoteInvite(code = room.joinCode, url = INVITE_PREFIX + room.joinCode)
@@ -62,7 +62,7 @@ class BrokerRemoteStarter(
         return try {
             val roomId = parsed.lowercase()
             val me = api.join(roomId, newParticipantId(), deviceName(), parsed, null)
-            val transport = BrokerRemoteTransport(api, roomId, me.participantId, me.secret, scope, log = log)
+            val transport = BrokerRemoteTransport(api, roomId, me.participantId, me.secret, scope, initialSince = me.cursor, log = log)
             controller.attach(transport, BrokerApi.modeOf(me.mode) ?: RemoteSessionMode.LISTEN_TOGETHER, asHost = false)
             transport.start()
             JoinOutcome.Joined
@@ -79,7 +79,7 @@ class BrokerRemoteStarter(
     override fun clearInvite() { _invite.value = null }
 
     companion object {
-        const val INVITE_PREFIX = "pocketdj://remote/join/"
+        const val INVITE_PREFIX = "pocketdj://remote/join-net/"
 
         /** Plain-language failure text; pure, so the mapping is testable. */
         fun friendly(t: Throwable): String = when {

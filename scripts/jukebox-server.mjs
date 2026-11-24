@@ -1098,7 +1098,8 @@ function joinRemoteRoom(room, body, req, ip) {
   room.rev++;
   remoteTouch(room);
   remoteWake(room);
-  return { status: 200, json: { participantId: id, secret: p.secret, mode: room.mode } };
+  // cursor: the room's current seq, so the joiner's first poll skips history addressed to 'all' from before it arrived.
+  return { status: 200, json: { participantId: id, secret: p.secret, mode: room.mode, cursor: room.seq } };
 }
 
 function remoteParticipantOf(room, req) {
@@ -1114,7 +1115,7 @@ function sendRemote(room, from, body) {
   let env = body.env;
   if (typeof env === 'string') { try { env = JSON.parse(env); } catch { env = null; } }
   if (!env || typeof env !== 'object' || typeof env.kind !== 'string' || typeof env.payload !== 'string') return { status: 400, json: { error: 'bad envelope' } };
-  if (to !== 'all' && !room.participants.has(to)) return { status: 404, json: { error: 'unknown recipient' } };
+  if (to !== 'all' && !room.participants.has(to)) return { status: 409, json: { error: 'unknown recipient' } }; // not 404: clients read 404 as "room gone"
   const ev = { seq: ++room.seq, from: from.id, to, reliable: body.reliable !== false, env: { v: env.v, kind: env.kind, payload: env.payload } };
   const size = env.payload.length + 64;
   room.ring.push({ ev, size });
@@ -1195,7 +1196,6 @@ async function handleRemote(path, req, res, url) {
   const op = m[2];
   const wantMethod = op === 'poll' ? 'GET' : 'POST';
   if (req.method !== wantMethod) return send(res, 405, { error: 'method not allowed' });
-  if ((op === 'send' || op === 'poll') && !remoteIpAllowed(remoteIoHits, ip, REMOTE.ioWindowMax)) return send(res, 429, { error: 'slow down' });
   if (op === 'join') {
     const body = await readJsonBounded(req, res);
     if (body === null) return;
@@ -1204,6 +1204,8 @@ async function handleRemote(path, req, res, url) {
   }
   const p = remoteParticipantOf(room, req);
   if (!p) return send(res, 401, { error: 'unauthorized' });
+  // Rate-limit only AFTER the bearer checks out, so unauthenticated floods can't burn a NAT'd user's quota.
+  if ((op === 'send' || op === 'poll') && !remoteIpAllowed(remoteIoHits, ip, REMOTE.ioWindowMax)) return send(res, 429, { error: 'slow down' });
   if (op === 'poll') return pollRemote(room, p, url, res);
   if (op === 'leave') { leaveRemote(room, p); return send(res, 200, { ok: true }); }
   const body = await readJsonBounded(req, res);

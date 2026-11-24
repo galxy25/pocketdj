@@ -104,10 +104,10 @@ test('send to all reaches the other participant, never the sender; sender is sta
   assert.deepEqual(h.json.events, []); // own message is not echoed (timed out after the 700 ms test poll window)
 });
 
-test('directed sends reach only the addressee; unknown recipient is 404; env may be a JSON string', async () => {
+test('directed sends reach only the addressee; unknown recipient is 409 (never 404, which clients read as room-gone); env may be a JSON string', async () => {
   const r = await room(srv.base);
   const third = (await call(srv.base, 'POST', `/remote/${r.roomId}/join`, { body: { participantId: 'c-third', joinCode: r.joinCode } })).json;
-  assert.equal((await call(srv.base, 'POST', `/remote/${r.roomId}/send`, { token: r.host.secret, body: { to: 'nobody', env: env('x') } })).status, 404);
+  assert.equal((await call(srv.base, 'POST', `/remote/${r.roomId}/send`, { token: r.host.secret, body: { to: 'nobody', env: env('x') } })).status, 409);
   await call(srv.base, 'POST', `/remote/${r.roomId}/send`, { token: r.host.secret, body: { to: 'b-guest', reliable: false, env: JSON.stringify(env('ping')) } });
   const g = await call(srv.base, 'GET', `/remote/${r.roomId}/poll?since=0`, { token: r.guest.secret });
   assert.equal(g.json.events.length, 1);
@@ -224,4 +224,22 @@ test('an oversized body is 413', async () => {
   const r = await room(srv.base);
   const big = await call(srv.base, 'POST', `/remote/${r.roomId}/send`, { token: r.host.secret, body: { to: 'all', env: env('state', 'A'.repeat(70 * 1024)) } });
   assert.equal(big.status, 413);
+});
+
+test('join returns the room cursor so a late joiner skips earlier history', async () => {
+  const r = await room(srv.base);
+  await call(srv.base, 'POST', `/remote/${r.roomId}/send`, { token: r.host.secret, body: { to: 'all', env: env('state') } });
+  const late = await call(srv.base, 'POST', `/remote/${r.roomId}/join`, { body: { participantId: 'c-late', joinCode: r.joinCode } });
+  assert.equal(late.json.cursor, 1);
+  const p = await call(srv.base, 'GET', `/remote/${r.roomId}/poll?since=${late.json.cursor}&rev=-1`, { token: late.json.secret });
+  assert.deepEqual(p.json.events, []);
+});
+
+test('unauthenticated poll/send floods do not consume the per-IP quota', async () => {
+  const lim = await boot({ JUKEBOX_REMOTE_IO_WINDOW_MAX: '3' });
+  try {
+    const r = await room(lim.base);
+    for (let i = 0; i < 10; i++) assert.equal((await call(lim.base, 'GET', `/remote/${r.roomId}/poll`, { token: 'bad' })).status, 401);
+    assert.equal((await call(lim.base, 'POST', `/remote/${r.roomId}/send`, { token: r.host.secret, body: { to: 'all', env: env('x') } })).status, 200);
+  } finally { lim.stop(); }
 });

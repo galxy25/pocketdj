@@ -109,7 +109,16 @@ fun RemoteScreen(modifier: Modifier = Modifier) {
     // A scanned invite (pocketdj://remote/join/<token>) joins once the permissions are in.
     val pendingJoin by graph.shellGraph.deepLinks.pendingRemoteJoin.collectAsState()
     LaunchedEffect(pendingJoin) {
-        graph.shellGraph.deepLinks.takePendingRemoteJoin()?.let { token -> guard(false) { vm.joinWithCode(token) } }
+        graph.shellGraph.deepLinks.takePendingRemoteJoinTarget()?.let { (token, internet) ->
+            // The invite says which transport its host used (pocketdj://remote/join-net/ = broker): join with that one.
+            if (internet && !serverSet) {
+                controller.setStatus("Set a jukebox server in Settings to join sessions over the internet.")
+            } else {
+                viaInternet = internet
+                RemoteStarters.current = if (internet) graph.remoteGraph.brokerStarter else graph.remoteGraph.nearbyStarter
+                guard(false) { vm.joinWithCode(token) }
+            }
+        }
     }
     if (showRationale) {
         val hosting = ask?.first ?: false
