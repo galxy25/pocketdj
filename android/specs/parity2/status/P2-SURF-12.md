@@ -5,7 +5,7 @@ state: implemented
 - [x] PocketDjAppFunctions.kt: 12 @AppFunction methods (addSongToCollection, addCurrentSongToCollection, setMixMode, muteStem, unmuteStem, playCollection, shuffleCollection, playMyPocket, startAutoMix, pauseAutoMix, resumeAutoMix, createPocket) -> AppFunctionsAdapter -> AppFunctionTarget (ShellActionsTarget = one line per ShellActions door)
 - [x] Name resolution reuses CollectionNameMatcher (strict, never initials) + IntentSongMatcher; ShellActionException becomes the spoken line
 - [x] Wiring: PocketDjApplication implements AppFunctionConfiguration.Provider; ShellGraph.appFunctionsAdapter()
-- [x] Tests: PocketDjAppFunctionsTest (12). Full run: 7692 tests, 0 failures; testDebugUnitTest + assembleDebug + assembleRelease green (release needed a retry alone: the first combined run hit a Kotlin daemon OOM in compileReleaseKotlin, unrelated to code).
+- [x] Tests: PocketDjAppFunctionsTest (12). Full run: 7849 tests, 0 failures; testDebugUnitTest + assembleDebug + assembleRelease green (release needed a retry alone: the first combined run hit a Kotlin daemon OOM in compileReleaseKotlin, unrelated to code).
 
 ## Files touched outside owned list
 - android/build.gradle.kts (ksp plugin, apply false), gradle/libs.versions.toml, app/build.gradle.kts (ksp plugin + 3 deps), PocketDjApplication.kt (Provider), di/ShellGraph.kt (appFunctionsAdapter). AndroidManifest.xml NOT edited: the library's merged manifest declares its service, enabled only on API 36+ by its own bool resource.
