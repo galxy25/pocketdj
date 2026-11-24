@@ -500,7 +500,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 ## Parity 2 status ledger — by package
 
-Second parity program (`feat/android-parity2`, design in [`architecture/android-parity2.md`](./architecture/android-parity2.md), roadmap `android/specs/parity2/roadmap.json`, per-wave results in `android/specs/parity2/PROGRESS.md`, open decisions in `QUESTIONS.md`). Every package is merged with JVM tests green and emulator steps run; the real-device items are collected in `android/specs/parity2/DEVICE-CHECKLIST.md`, and Play submission notes in `android/specs/parity2/RELEASE.md`.
+Second parity program (`feat/android-parity2`, design in [`architecture/android-parity2.md`](./architecture/android-parity2.md), roadmap `android/specs/parity2/roadmap.json`, per-wave results in `android/specs/parity2/PROGRESS.md`, open decisions in `QUESTIONS.md`). Every package is merged with JVM tests green; emulator steps were run for most but not all (see each row, e.g. SURF-11 and COL-5 record them as not run); the real-device items are collected in `android/specs/parity2/DEVICE-CHECKLIST.md`, and Play submission notes in `android/specs/parity2/RELEASE.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
@@ -589,4 +589,4 @@ Second parity program (`feat/android-parity2`, design in [`architecture/android-
 | SOC-2 — Profile sync (Android↔Android) go-live code: link-a-device QR scanner, pocketdj://link,… | 11 | Merged (`78ce07ec`) | Two-device link and pull. |
 | SURF-12 — Android AppFunctions for Gemini (the Siri AI tools equivalent), runtime-gated on API 36+ | 11 | Merged (`b84bcfe6`) | Gemini on an Android 16 phone. |
 | SURF-6 — Assistant/launcher extras: in-app search action, onProvideAssistContent, pin collection… | 11 | Merged (`316c965b`) | — |
-| REL-1 — Release: ledger reconciliation, device checklist, Play listing notes, Data safety/permi… | 12 | This package (docs + release build) | Run DEVICE-CHECKLIST.md on Levi's phone before production. |
+| REL-1 — Release: ledger reconciliation, device checklist, Play listing notes, Data safety/permi… | 12 | Merged (docs + release build; signed AAB not yet built) | Run DEVICE-CHECKLIST.md on Levi's phone before production. |
