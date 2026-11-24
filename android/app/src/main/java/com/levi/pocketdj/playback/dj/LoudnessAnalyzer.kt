@@ -29,6 +29,7 @@ object LoudnessAnalyzer {
         cancel: LoudnessCancelFlag? = null,
         decoder: ChunkDecoder = platformDecoder,
     ): Double? {
+        if (segment?.lengthMs != null && segment.lengthMs <= 0) return null
         var meter: Loudness.Meter? = null
         val start = (segment?.startMs ?: 0) / 1000.0
         val len = (segment?.lengthMs ?: 0).coerceAtLeast(0) / 1000.0

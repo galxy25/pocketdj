@@ -16,3 +16,10 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR single-flight race (LoudnessCache): fixed. Table write + inFlight/flags removal now in one synchronized block (storeLocked); scheduleSave outside. Test: noDuplicateDecodeWhenCallersArriveAtCompletion.
+- MINOR awaiters hang if scope dies: fixed. Completion and inFlight cleanup in finally, plus job.invokeOnCompletion for a job cancelled before running. Test: tornDownScopeCompletesAwaitersAndClearsInFlight.
+- NIT zero-length segment: fixed. analyzeSync returns null without decoding when lengthMs <= 0. Test: zeroLengthSegmentMeasuresNothing.
+
+fixes applied

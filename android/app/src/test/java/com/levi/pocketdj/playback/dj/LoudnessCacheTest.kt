@@ -138,4 +138,31 @@ class LoudnessCacheTest {
         val cx = runCatching { LoudnessAnalyzer.analyzeSync("p", null, true, flag, { _, _, _, c, _ -> !c() }) }
         assertTrue(cx.exceptionOrNull() is CancellationException)
     }
+
+    @Test fun tornDownScopeCompletesAwaitersAndClearsInFlight() = runBlocking {
+        val song = media(5); val key = LoudnessCache.key("s", song)!!
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val c = LoudnessCache(null, scope, Dispatchers.Default, 10, { _, _, _ -> Thread.sleep(100); -20.0 })
+        scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        val r = kotlinx.coroutines.withTimeout(3000) { c.analyze(key, song.path) }
+        assertEquals(LoudnessCache.Outcome.Cancelled, r)
+        assertFalse(c.isAnalyzing(key))
+    }
+
+    @Test fun noDuplicateDecodeWhenCallersArriveAtCompletion() = runBlocking {
+        repeat(30) { i ->
+            val calls = AtomicInteger(); val song = media(10 + i)
+            val c = cache(null, calls) { _, _, _ -> -20.0 }
+            val key = LoudnessCache.key("s$i", song)!!
+            (1..8).map { async(Dispatchers.Default) { repeat(50) { c.analyze(key, song.path) } } }.awaitAll()
+            assertEquals(1, calls.get())
+        }
+    }
+
+    @Test fun zeroLengthSegmentMeasuresNothing() {
+        var decoded = false
+        val r = LoudnessAnalyzer.analyzeSync("x", LoudnessSegment(1000, 0), true, null, { _, _, _, _, _ -> decoded = true; true })
+        assertNull(r)
+        assertFalse(decoded)
+    }
 }

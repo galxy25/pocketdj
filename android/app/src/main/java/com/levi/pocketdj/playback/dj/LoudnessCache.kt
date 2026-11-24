@@ -79,9 +79,11 @@ class LoudnessCache(
     fun gainDb(key: Key): Double? = LoudnessLeveling.gainDb(lufs(key))
 
     fun store(lufs: Double?, key: Key) {
-        synchronized(lock) { table[key] = lufs; failed.remove(key) }
+        synchronized(lock) { storeLocked(lufs, key) }
         scheduleSave()
     }
+
+    private fun storeLocked(lufs: Double?, key: Key) { table[key] = lufs; failed.remove(key) }
 
     /**
      * Measures [key]'s file once. [isComplete] false => [Outcome.NotReady] (a growing file's size and
@@ -105,22 +107,33 @@ class LoudnessCache(
             val r = running.await()
             return if (r is Outcome.Measured) Outcome.Cached(r.lufs) else r
         }
-        scope.launch(ioDispatcher) {
-            val outcome: Outcome = try {
-                val v = measure(path, key.segment, flag)
+        val job = scope.launch(ioDispatcher) {
+            var outcome: Outcome = Outcome.Cancelled
+            try {
+                outcome = try {
+                    val v = measure(path, key.segment, flag)
+                    // Table write + inFlight/flags removal in ONE block: no window where neither is set.
+                    synchronized(lock) { storeLocked(v, key); inFlight.remove(key); flags.remove(key) }
+                    scheduleSave()
+                    log("level song=${key.songId} lufs=${v?.let { "%.1f".format(it) } ?: "nil"}")
+                    Outcome.Measured(v)
+                } catch (_: CancellationException) {
+                    Outcome.Cancelled
+                } catch (t: Throwable) {
+                    synchronized(lock) { failed.add(key) }
+                    log("level song=${key.songId} analyze failed (not retried): ${t.message}")
+                    Outcome.Failed
+                }
+            } finally {
+                // Always release the key and wake every awaiter, even if the scope dies mid-run.
                 synchronized(lock) { inFlight.remove(key); flags.remove(key) }
-                store(v, key)
-                log("level song=${key.songId} lufs=${v?.let { "%.1f".format(it) } ?: "nil"}")
-                Outcome.Measured(v)
-            } catch (_: CancellationException) {
-                synchronized(lock) { inFlight.remove(key); flags.remove(key) }
-                Outcome.Cancelled
-            } catch (t: Throwable) {
-                synchronized(lock) { inFlight.remove(key); flags.remove(key); failed.add(key) }
-                log("level song=${key.songId} analyze failed (not retried): ${t.message}")
-                Outcome.Failed
+                running.complete(outcome)
             }
-            running.complete(outcome)
+        }
+        // Job cancelled before its body ever ran (scope torn down): the finally above never executes.
+        job.invokeOnCompletion {
+            synchronized(lock) { if (inFlight[key] === running) { inFlight.remove(key); flags.remove(key) } }
+            running.complete(Outcome.Cancelled)
         }
         return running.await()
     }
