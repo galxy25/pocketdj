@@ -1,4 +1,4 @@
-state: reviewed
+state: implemented
 
 # P2-POC-13 — Listening-pockets upload Phase 6
 - [x] ListeningPocketsUploadResponse.caps parsed
@@ -23,3 +23,5 @@ None.
 - NIT serverCaps kept across profile rebind -> rejected (server capability is not per-profile; deliberate deviation, first response corrects caps).
 
 fixes applied
+
+Final: full suite 7468 tests, 0 failures; assembleDebug green at tip. Phase6 test: 12 tests.
