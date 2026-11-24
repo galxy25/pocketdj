@@ -6,7 +6,7 @@ state: implemented
 - [x] Event.mode (sensor-only, motion opt-in gated) / Event.run (RunWire) ABSENT unless serverSupportsWheel
 - [x] Fingerprint suffixes |m:<mode> |r:<id>/<slot> only when present
 - [x] e.pocketRun?.rowCollectionId now feeds context (POC-1 TODO resolved)
-- [x] ListeningPocketsPhase6Test: 13 tests; full suite green + assembleDebug
+- [x] ListeningPocketsPhase6Test: 12 tests; full suite green + assembleDebug
 
 ## Deviations / notes
 - New seam `ListeningPocketsService.motionOptedIn` (default off). NOT wired in app code (outside owned files): whoever owns the "Notice walking & running" setting must set `motionOptedIn = { settings.noticeMotion }` where `locationOptedIn` is wired. Until then mode is never sent.
