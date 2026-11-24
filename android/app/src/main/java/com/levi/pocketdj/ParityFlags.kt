@@ -22,5 +22,8 @@ object ParityFlags {
      * P2-DJ-6: the Now Playing DJ Mode chip and the DJ menu items. `false` until P2-DJ-8 (the transition engine +
      * conductor) lands, so a release cut after the session shell shows nothing the engine can't back.
      */
-    const val DJ_MODE: Boolean = false
+    val DJ_MODE: Boolean get() = DEBUG_FORCE_DJ_MODE
+
+    /** Debug screen toggle ("Parity: show DJ Mode chip"): lets the emulator drive the DJ-6 shell before P2-DJ-8 flips [DJ_MODE]. */
+    @Volatile var DEBUG_FORCE_DJ_MODE: Boolean = false
 }

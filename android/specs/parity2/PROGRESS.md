@@ -96,3 +96,24 @@ Emulator (emulator-5556, debug APK over existing data; shots in pocketdj-parity2
 
 Open: Q14 (mp3 index seeking), Q15 (thumbs placement), plus P2Q1 and P2Q7 still pending. The Debug section sits behind Settings > Show advanced.
 
+
+## Wave 6
+
+Packages merged: P2-DJ-6, P2-DJ-7, P2-POC-8, P2-REM-3, P2-ALB-6, P2-DJ-3, P2-LIB-2, P2-MIX-2 (one conflict: mix/graph/RenderParams.kt, both DJ-7 and MIX-2 added `ParamsComposer.setLevelDb`; kept MIX-2's per-deck `DeckInputs.levelDb` and added a `levelDb(d)` getter for the DJ transition engine). Status files set to merged.
+
+Tests: see the head commit; `:app:testDebugUnitTest :app:assembleDebug` green after merge (7023 tests, 0 failures before the integration fixes).
+
+Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave6/):
+- P2-REM-3 PASS after a fix. BUG: the debug fake-controller gate did not stop a media key: `SequencerForwardingPlayer.play()/pause()` (MediaSession, headset, notification) went straight to ExoPlayer, never through the gate. Fixed (forward Play/Pause through `RemoteControllerGate`); regression test `controllerGateForwardsMediaSessionPlayAndPauseInsteadOfSounding`. Verified: gate on -> `remote redirect pause` logged, playback keeps going; gate off -> the key pauses. Device-only: Bluetooth / Android Auto.
+- P2-POC-8 PASS: "Pocket: build+start" started a 100-row run; skipping repeatedly logged `replan ... applied=N banned=[kid capri, ...]`; the "Re-tuned" label appeared on swapped Up Next rows and was gone ~4 s later. Device-only: 100th play-through.
+- P2-MIX-2 PASS: Settings > Mixing > Volume glide on, Debug AutoDJ: start logged `volume glide deck=A gain=3.8` / `deck=B gain=6.0`; Mix screen shows the "Vol Glide" pill and "Volume glide trim +3.8 dB" under Vol.
+- P2-DJ-6 PASS with a debug seam: the chip is hidden by ParityFlags.DJ_MODE (false until P2-DJ-8), so the integrator added a debug toggle (Debug > "Parity: show DJ Mode chip"). Tapping DJ with the seed queue playing turned Mix Mode on and the chip read "Ready · DJ — next mixes in"; starting a Mix-tab deck logged `[dj] mix tab live - DJ Mode paused`, pausing it logged `mix tab idle - DJ Mode resumes`. The "DJ — paused · Mix tab" chip text itself could not be seen on screen (Now Playing is not reachable while the Mix tab plays); it is covered by DjModeControllerTest/DjModeTest.
+- P2-ALB-6 PASS: album page shows the waveform; a tap at 60 % started the album there (`album scrub ... fileMs=3550895`, 59:08 of 98:34); dragging a boundary dot on an editable album (Love's On Fire) wrote `pocketdj-edits.json` with `endMs/startMs 462584` and showed the nudge bar. Not run: the glide at the new start (that album has no rip on the emulator). Albums whose raw segment count differs from the track count (e.g. New Beginning, 16 vs 17) are correctly read-only (no dots).
+- P2-LIB-2 PASS: with a python stub (`pdj.amApiBase`, `pdj.amDevToken`, `pdj.fakeMut` extras) the sign-in hook indexed 120 songs / 84 albums into `pocketdj-apple-music-library.json` (iOS doc shape, `amlib_` ids, catalog appleMusicId 900000+). Device-only: real subscription counts.
+- P2-DJ-3: engine-only. Producer > Demuxer on a burned song still demuxes (25 chord segments, stems), no crash; BPM/key are not shown on that panel so the regression is only partly checked.
+- P2-DJ-7: engine-only (driven end to end in P2-DJ-8).
+- No FATAL EXCEPTION / ANR in logcat for com.levi.pocketdj.
+
+Integrator changes: SequencerForwardingPlayer play/pause gate (+ test), ParityFlags.DJ_MODE now a getter backed by a debug toggle, DebugScreen toggle.
+
+Open: P2Q16, P2Q17 (new), plus earlier pending items. Note: the Debug section's "Show advanced" switch resets on each process start; the one-at-a-time free-memory guard stalls while the emulator runs (stop the emulator to let a build start).

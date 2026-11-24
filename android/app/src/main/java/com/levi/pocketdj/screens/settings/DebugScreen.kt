@@ -120,6 +120,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     ToggleRow("Remote telemetry", telemetry) {
         telemetry = it; diag.settings.telemetryEnabled = it; diag.log.telemetryEnabled = it
     }
+    var forceDj by remember { mutableStateOf(com.levi.pocketdj.ParityFlags.DEBUG_FORCE_DJ_MODE) }
+    ToggleRow("Parity: show DJ Mode chip", forceDj) { forceDj = it; com.levi.pocketdj.ParityFlags.DEBUG_FORCE_DJ_MODE = it }
     var fakeController by remember { mutableStateOf(com.levi.pocketdj.remote.RemoteControllerGate.shared.fakeController) }
     ToggleRow("Remote: fake controller gate", fakeController) {
         fakeController = it; com.levi.pocketdj.remote.RemoteControllerGate.shared.fakeController = it

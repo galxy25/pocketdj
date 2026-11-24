@@ -21,6 +21,9 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 - **P2Q14 [P2-ALB-5]** Mp3 index seeking (ConstantBitrate/index seeker) for analog album sides is NOT enabled: no real side header to inspect, and the flag forces a full-file scan on progressive http. If device seeks inside a side land inaccurately, turn it on (flag documented in the status file). OK to leave off until a device shows drift? - *Default: off; add a device-pass check of seeks inside a side.*
 - **P2Q15 [P2-SURF-2]** The system media card on Android 16 shows only the first two custom buttons (heart, shuffle) in its compact view; repeat and thumbs are listed in the session (dumpsys) but live in overflow/other surfaces (Android Auto, lock screen). Acceptable, or reorder so thumbs outrank shuffle when a rec target exists? - *Default: keep order heart, shuffle, repeat, thumbs; verify on a device and Android Auto DHU.*
 
+- **P2Q16 [P2-ALB-6]** Tapping the album waveform when the side is not loaded starts the album at that track, so earlier tracks are not in the queue (iOS keeps the whole album queued). Queue the whole album and cue the tapped track instead? — *Default: current behaviour (queue from the tapped track).*
+- **P2Q17 [P2-DJ-6]** DJ Mode chip stays hidden behind ParityFlags.DJ_MODE until P2-DJ-8. The integrator added a debug-only toggle (Debug ▸ "Parity: show DJ Mode chip") so the shell can be driven before then. Fine to keep? — *Default: keep; it only exists in debug and is moot once DJ_MODE flips on.*
+
 ## ANSWERED
 
 (none yet)
