@@ -30,6 +30,15 @@ class PocketWheelController(
     @Volatile var lastNow: PocketBestMatch.Now? = null
         private set
 
+    /**
+     * The car-mode answer ([refresh] with `carOverride = true`: Android Auto). Kept apart from [result]/[lastNow] so an
+     * Auto refresh never leaks a carPlay-mode best match into the phone's Pocket Wheel UI or Assistant paths, and a
+     * phone refresh never reorders Auto's "Pockets right now".
+     */
+    private val _carResult = MutableStateFlow<PocketBestMatch.Result?>(null)
+    val carResult: StateFlow<PocketBestMatch.Result?> = _carResult.asStateFlow()
+    @Volatile private var carNow: PocketBestMatch.Now? = null
+
     var clockMs: () -> Double = { System.currentTimeMillis().toDouble() }
 
     /** Minutes from UTC at [atMs] (the device zone, DST-aware). */
@@ -84,9 +93,14 @@ class PocketWheelController(
             if ((results.roundLearning?.pocketRate ?: 0.0) >= 0.5) boosted = results.patterns.map { it.id }.toSet()
         }
         val r = PocketBestMatch.best(snapshot(), n, PocketBestMatch.Fallbacks(cloud, emptyFallback(), boosted))
-        _result.value = r
-        lastNow = n
-        computedAtMs = nowMs
+        if (carOverride) {
+            _carResult.value = r
+            carNow = n
+        } else {
+            _result.value = r
+            lastNow = n
+            computedAtMs = nowMs
+        }
         return r
     }
 
@@ -117,8 +131,8 @@ class PocketWheelController(
     }
 
     /** The top [count] moments within +-1 h of now across modes (Android Auto's "Pockets right now"). */
-    fun momentsNow(count: Int = 5): List<PocketMoment> {
-        val n = lastNow ?: return emptyList()
+    fun momentsNow(count: Int = 5, car: Boolean = false): List<PocketMoment> {
+        val n = (if (car) carNow else lastNow) ?: return emptyList()
         val scored = ArrayList<Pair<PocketMoment, Double>>()
         for (m in snapshot().moments) {
             if (m.plays <= 0) continue

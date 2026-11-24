@@ -313,8 +313,8 @@ class AppAutoForYouSource(private val app: AppGraph) : AutoForYouSource {
 class AppAutoPocketsSource(private val app: AppGraph) : AutoPocketsSource {
     private val wheel get() = app.pocketsGraph.wheelController
 
-    override fun best() = wheel.result.value
-    override fun momentsNow(count: Int) = wheel.momentsNow(count)
+    override fun best() = wheel.carResult.value
+    override fun momentsNow(count: Int) = wheel.momentsNow(count, car = true)
     override fun collectionNames() = wheel.collectionNames
 
     override suspend fun refresh() {

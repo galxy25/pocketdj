@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-POC-16 Pocket surfaces (Android Auto, shortcut, deep link, Assistant phrase)
 
@@ -24,3 +24,11 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MINOR no voice-mapping test -> fixed: MediaSearchHandlerTest covers the phrases, "my pocket of sunshine" not matching, a collection named "My Pocket" not shadowing, Album/Song focus not matching, and ShellActionException producing a message.
+- MINOR Auto refresh wrote shared wheel.result/lastNow -> fixed: carOverride refreshes now write a separate `carResult`/car-now; AppAutoPocketsSource reads those (`momentsNow(count, car = true)`), phone result untouched. Tests added.
+- MINOR voice/deep link planned in phone mode during Auto projection -> fixed: `AutoSessionTracker` (set by PlaybackService onConnect/onDisconnected for automotive/Auto-companion controllers); `ShellActions.playPocketForNow()` passes `car = AutoSessionTracker.isActive`. Tests added.
+- NIT one extra refresh per connect / open list across an hour boundary -> not changed (harmless, as noted).
+
+fixes applied. Full suite 7061 tests, 0 failures (was 7053; +8).

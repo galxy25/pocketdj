@@ -199,4 +199,59 @@ class MediaSearchHandlerTest {
         val pool = listOf(pl("a", "Chill", 1.0), pk("b", "Chill", 5.0))
         assertEquals("b", (resolve("Chill", MediaFocus.Any, pool) as MediaSearchResult.Play).candidate.id)
     }
+
+    // ---- P2-POC-16: "my pocket" / "pocket for now" / "something that fits" ----
+
+    @Test
+    fun pocketForNowPhrases_mapToPocketForNow() {
+        for (q in listOf("my pocket", "play my pocket", "Pocket for now", "play my pocket on PocketDJ", "the pocket for right now!",
+            "something that fits", "Play something that fits please", "whatever fits")) {
+            assertEquals(q, MediaSearchResult.PocketForNow, resolve(q, MediaFocus.Any, emptyList()))
+            assertEquals(q, MediaSearchResult.PocketForNow, resolve(q, MediaFocus.Playlist, emptyList()))
+        }
+    }
+
+    @Test
+    fun pocketForNow_wholeUtteranceOnly() {
+        assertTrue(!MediaSearchResolver.isPocketForNowPhrase("my pocket of sunshine"))
+        assertTrue(!MediaSearchResolver.isPocketForNowPhrase("warmup pocket"))
+        assertTrue(MediaSearchResolver.isPocketForNowPhrase("My Pocket."))
+        val r = resolve("my pocket of sunshine", MediaFocus.Any, listOf(pk("s", "My Pocket of Sunshine")))
+        assertEquals("s", (r as MediaSearchResult.Play).candidate.id)
+    }
+
+    @Test
+    fun pocketForNow_beatsCollectionNamedMyPocket() {
+        val pool = listOf(pk("mine", "My Pocket", 9.0), pl("pl", "my pocket", 1.0))
+        assertEquals(MediaSearchResult.PocketForNow, resolve("my pocket", MediaFocus.Any, pool))
+        assertEquals(MediaSearchResult.PocketForNow, resolve("play my pocket", MediaFocus.Playlist, pool))
+    }
+
+    @Test
+    fun pocketForNow_notForAlbumOrSongFocus() {
+        assertTrue(resolve("my pocket", MediaFocus.Album, emptyList()) !is MediaSearchResult.PocketForNow)
+        assertTrue(resolve("my pocket", MediaFocus.Song, emptyList()) !is MediaSearchResult.PocketForNow)
+    }
+
+    private class PocketActions(var caption: String = "Warmup, steady", var fail: ShellActionException? = null) : MediaPlayActions {
+        override suspend fun playPlaylist(id: String, shuffle: Boolean) = ""
+        override suspend fun playPocket(id: String, shuffle: Boolean) = ""
+        override suspend fun playAlbum(id: String, shuffle: Boolean) = ""
+        override suspend fun playSong(id: String) = ""
+        override suspend fun playPocketForNow(): String = fail?.let { throw it } ?: caption
+    }
+
+    @Test
+    fun handler_pocketForNow_playsAndAnnounces_orSpeaksFailure() = runTest {
+        val actions = PocketActions()
+        val messages = mutableListOf<String>()
+        val h = MediaSearchHandler(actions, { emptyList() }, { }, { messages += it })
+        assertEquals("Warmup, steady", h.handle(MediaSearchRequest("play my pocket", MediaFocus.Any)))
+        assertEquals(listOf(com.levi.pocketdj.shell.pocketPlayingLine("Warmup, steady")), messages)
+        actions.fail = ShellActionException.NoPocketFits
+        messages.clear()
+        assertNull(h.handle(MediaSearchRequest("something that fits", MediaFocus.Any)))
+        assertEquals(listOf(ShellActionException.NoPocketFits.message.orEmpty()), messages)
+        assertTrue(messages.single().isNotBlank())
+    }
 }

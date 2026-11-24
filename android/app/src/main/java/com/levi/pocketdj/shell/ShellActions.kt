@@ -1,5 +1,6 @@
 package com.levi.pocketdj.shell
 
+import com.levi.pocketdj.auto.AutoSessionTracker
 import com.levi.pocketdj.assistant.MediaPlayActions
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
@@ -233,7 +234,7 @@ class ShellActions(
      * readiness like every other play door, then the same run the wheel's centre play button starts. Returns the
      * spoken caption ("<collection>, <caption>"). [car] counts the car as connected (an Android Auto session).
      */
-    override suspend fun playPocketForNow(): String = playPocketForNow(car = false)
+    override suspend fun playPocketForNow(): String = playPocketForNow(car = AutoSessionTracker.isActive)
 
     suspend fun playPocketForNow(car: Boolean): String {
         veto()

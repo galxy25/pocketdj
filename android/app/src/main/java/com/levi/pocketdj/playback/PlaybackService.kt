@@ -558,6 +558,9 @@ class PlaybackService : MediaLibraryService() {
             // Final review: the service is exported (Auto / system controllers need it), but the state-changing custom
             // commands (favorite, add-to-collection) go only to our own process and trusted system controllers.
             val trusted = controller.isTrusted || controller.packageName == packageName
+            if (session.isAutomotiveController(controller) || session.isAutoCompanionController(controller)) {
+                com.levi.pocketdj.auto.AutoSessionTracker.connected(controller)
+            }
             val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().apply {
                 if (trusted) {
                     add(FavoriteCommand.sessionCommand)
@@ -568,6 +571,10 @@ class PlaybackService : MediaLibraryService() {
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(cmds)
                 .build()
+        }
+
+        override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            com.levi.pocketdj.auto.AutoSessionTracker.disconnected(controller)
         }
 
         override fun onPlayerCommandRequest(

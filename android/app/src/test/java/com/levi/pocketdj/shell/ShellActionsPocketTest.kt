@@ -86,9 +86,25 @@ class ShellActionsPocketTest {
     @Test fun carFlagForcesCarPlayMode_whileThePhoneDoorDoesNot() = runTest {
         val r = rig()
         r.actions.playPocketForNow(car = true)
-        assertEquals(PocketMode.CAR_PLAY, r.wheel.lastNow!!.mode)
+        assertEquals(PocketMode.CAR_PLAY, r.wheel.carResult.value!!.profile.key!!.mode)
+        assertEquals("a car refresh never touches the phone's shared result", null, r.wheel.lastNow)
         r.actions.playPocketForNow()
         assertFalse("no projection, no motion => mode unknown", r.wheel.lastNow!!.mode == PocketMode.CAR_PLAY)
+    }
+
+    @Test fun voiceAndDeepLinkDoor_plansInCarMode_whileAnAutoSessionIsConnected() = runTest {
+        val tracker = com.levi.pocketdj.auto.AutoSessionTracker
+        tracker.reset()
+        val auto = Any()
+        tracker.connected(auto)
+        try {
+            val r = rig()
+            r.actions.playPocketForNow()
+            assertEquals(listOf("h08|d2|carPlay/carPlay"), r.played)
+        } finally {
+            tracker.disconnected(auto)
+        }
+        assertFalse(tracker.isActive)
     }
 
     @Test fun onboardingVetoBlocksBeforeTouchingTheWheel() = runTest {

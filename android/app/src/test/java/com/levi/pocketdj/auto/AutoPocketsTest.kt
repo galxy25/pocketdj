@@ -302,4 +302,16 @@ class AutoPocketsTest {
         assertTrue(xml.contains("android:shortcutId=\"play_pocket_now\""))
         assertTrue(xml.contains("android:data=\"${ShortcutRanking.POCKET_NOW_LINK}\""))
     }
+
+    @Test fun autoSessionTrackerCountsConnectedControllers() {
+        com.levi.pocketdj.auto.AutoSessionTracker.reset()
+        val a = Any(); val b = Any()
+        assertFalse(com.levi.pocketdj.auto.AutoSessionTracker.isActive)
+        com.levi.pocketdj.auto.AutoSessionTracker.connected(a)
+        com.levi.pocketdj.auto.AutoSessionTracker.connected(b)
+        com.levi.pocketdj.auto.AutoSessionTracker.disconnected(a)
+        assertTrue(com.levi.pocketdj.auto.AutoSessionTracker.isActive)
+        com.levi.pocketdj.auto.AutoSessionTracker.disconnected(b)
+        assertFalse(com.levi.pocketdj.auto.AutoSessionTracker.isActive)
+    }
 }
