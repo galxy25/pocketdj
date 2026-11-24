@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-SURF-5 status
 - [x] AddToCollectionAction.kt: CollectionRef (pocket:/playlist: ids), AddToCollectionResult (iOS dialog strings), AudibleOwner, AddToCollectionAction (pocket -> membership, playlist -> FIRST chapter, member never toggled off, reserved Now Playing refused; goes through AddToActions so Recent / Activity / AM write-back fire)
@@ -17,3 +17,9 @@ state: implemented
 
 ## Questions for Levi
 - App Actions is being wound down; declared anyway (default per roadmap: yes). Say if you'd rather drop the capabilities.
+
+## Review
+- MINOR shortcuts.xml capabilities pass spoken names that the parser dropped -> fixed: new DeepLink.Unresolved; an unparseable `add` collection or a bad/missing automix kind/id now posts a visible message instead of returning None (tests: AddToCollectionActionTest, DeepLinkDispatcherTest.spokenCollectionNamePostsVisibleMessage). Entity binding not done; capabilities kept.
+- NIT dynamic shortcut label -> fixed: ShortcutRanking.autoMixLabel truncates the name first with an ellipsis (test added).
+
+fixes applied. Tests: 6666 run, 0 failures; assembleDebug OK.
