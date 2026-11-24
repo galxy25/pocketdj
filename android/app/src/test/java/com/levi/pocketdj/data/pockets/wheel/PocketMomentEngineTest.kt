@@ -242,7 +242,7 @@ class PocketMomentEngineTest {
 
     @Test fun round6AndPercentile() {
         assertEquals(0.333333, PocketMomentEngine.round6(1.0 / 3), 0.0)
-        assertEquals(2.0, PocketMomentEngine.weightedPercentile(listOf(1.0 to 1.0, 2.0 to 1.0, 3.0 to 1.0, 4.0 to 1.0), 0.25) + 1.0, 0.0)
+        assertEquals(1.0, PocketMomentEngine.weightedPercentile(listOf(1.0 to 1.0, 2.0 to 1.0, 3.0 to 1.0, 4.0 to 1.0), 0.25), 0.0)
         assertEquals(3.0, PocketMomentEngine.weightedPercentile(listOf(4.0 to 1.0, 1.0 to 1.0, 2.0 to 1.0, 3.0 to 1.0), 0.75), 0.0)
     }
 }
