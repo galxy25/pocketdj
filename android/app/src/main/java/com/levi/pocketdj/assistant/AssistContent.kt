@@ -7,8 +7,12 @@ package com.levi.pocketdj.assistant
  * JVM-testable; the activity only wires them.
  */
 object AssistContent {
-    /** Shared with the shell: true while the Now Playing screen is the visible destination. */
-    @Volatile var nowPlayingVisible: Boolean = false
+    /** Shared with the shell: the current nav route. Visibility is derived at assist time. */
+    @Volatile var currentRoute: String? = null
+
+    /** True while [nowPlayingRoute] is the visible destination. */
+    fun isNowPlayingVisible(route: String? = currentRoute, nowPlayingRoute: String): Boolean =
+        route != null && route == nowPlayingRoute
 
     /** Website fallback URI (the assistant needs a web URI to attribute the content to). */
     const val WEB_URI = "https://pocket-dj.com/"

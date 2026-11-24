@@ -59,4 +59,11 @@ class AssistContentTest {
         assertEquals("pin_pocket_p1", PinShortcutSpec.shortcutId(PlayKind.Pocket, "p1"))
         assertEquals("pocketdj://play/pocket/a%20b", PinShortcutSpec.deepLink(PlayKind.Pocket, "a b"))
     }
+
+    @Test
+    fun visibilityDerivedFromRoute() {
+        assertTrue(AssistContent.isNowPlayingVisible("np", "np"))
+        assertTrue(!AssistContent.isNowPlayingVisible("browse", "np"))
+        assertTrue(!AssistContent.isNowPlayingVisible(null, "np"))
+    }
 }

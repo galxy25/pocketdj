@@ -61,8 +61,15 @@ object PinShortcut {
 fun PinToHomeMenuItem(kind: PlayKind, id: String, name: String, dismiss: () -> Unit) {
     val context = LocalContext.current
     if (!PinShortcutSpec.canPin(id, name)) return
+    // Hide the row entirely when the launcher cannot pin shortcuts.
+    if (!ShortcutManagerCompat.isRequestPinShortcutSupported(context)) return
     DropdownMenuItem(
         text = { Text("Add to Home screen") },
-        onClick = { dismiss(); PinShortcut.request(context, kind, id, name) },
+        onClick = {
+            dismiss()
+            if (!PinShortcut.request(context, kind, id, name)) {
+                android.widget.Toast.makeText(context, "Couldn't add to Home screen", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        },
     )
 }

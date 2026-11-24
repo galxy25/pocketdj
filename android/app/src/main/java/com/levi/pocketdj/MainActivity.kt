@@ -65,7 +65,7 @@ class MainActivity : ComponentActivity() {
     /** SURF-6: schema.org MusicRecording for the assistant while Now Playing is visible. */
     override fun onProvideAssistContent(outContent: android.app.assist.AssistContent) {
         super.onProvideAssistContent(outContent)
-        if (!AssistContent.nowPlayingVisible) return
+        if (!AssistContent.isNowPlayingVisible(nowPlayingRoute = com.levi.pocketdj.screens.nowplaying.NOW_PLAYING_ROUTE)) return
         val graph = AppGraph.get(this)
         val st = graph.playbackGraph.sequencer.state.value
         val song = st.currentSongId?.let { graph.catalogRepository.state.value.catalog?.songsById?.get(it) }
