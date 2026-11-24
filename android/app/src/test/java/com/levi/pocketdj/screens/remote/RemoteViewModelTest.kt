@@ -65,7 +65,7 @@ class RemoteViewModelTest {
     }
 
     /** A VM over a (hosting) controller whose commands are captured instead of applied. */
-    private fun TestScope.capturing(starter: FakeStarter = FakeStarter(), songs: List<IndexSong> = emptyList()): Triple<RemoteViewModel, ArrayList<RemoteCommand>, Dev> {
+    private fun TestScope.capturing(starter: RemoteSessionStarter = FakeStarter(), songs: List<IndexSong> = emptyList()): Triple<RemoteViewModel, ArrayList<RemoteCommand>, Dev> {
         val d = dev("A", LoopbackHub(), backgroundScope)
         d.controller.attach(d.link, RemoteSessionMode.LISTEN_TOGETHER, asHost = true, seed = seed("s1", "s2", "s3", "s4"), autoTick = false)
         val sent = ArrayList<RemoteCommand>()
@@ -118,7 +118,7 @@ class RemoteViewModelTest {
         assertTrue(sent[1] is RemoteCommand.EnqueueNext)
         assertTrue(sent[2] is RemoteCommand.Append)
         val r = (sent[1] as RemoteCommand.EnqueueNext).rows.single()
-        assertEquals("x".let { "y" }, r.songId); assertEquals("Ny", r.title); assertEquals("Art", r.artist); assertEquals(180_000L, r.row.lengthMs)
+        assertEquals("y", r.songId); assertEquals("Ny", r.title); assertEquals("Art", r.artist); assertEquals(180_000L, r.row.lengthMs)
     }
 
     @Test fun addNowOnAnEmptySessionStartsPlayback() = runTest {

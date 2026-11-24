@@ -159,7 +159,7 @@ fun RemoteScrubber(positionMs: Long, lengthMs: Long?, onSeek: (Long) -> Unit, mo
 @Composable
 fun RemoteStartCard(
     mode: RemoteSessionMode, blurb: String, icon: ImageVector, starting: Boolean, enabled: Boolean,
-    onClick: () -> Unit, modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier, onClick: () -> Unit,
 ) {
     Surface(
         modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("remote-start-${if (mode == RemoteSessionMode.BACKSEAT) "backseat" else "listenTogether"}"),
