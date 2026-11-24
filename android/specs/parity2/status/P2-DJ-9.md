@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-DJ-9: DJ skip mix: ⏭ mixes over the Skip fade; double-tap and lock-screen/Auto/headset/widget ⏭ = 5 s sweep
 
@@ -23,3 +23,10 @@ state: implemented
 
 ## Questions for Levi
 None beyond roadmap needs_levi (default taken: tap acts at once, second tap upgrades).
+
+## Review
+- MAJOR (DSP-session remote next ran the 15 s Skip fade) → fixed. `NowPlayingDspPort.skipNextRemote()` (default = skipNext); the session's `handleSeek` Next goes through the pure `routeSeek` → `skipNextRemote()`; MixGraph's port calls `PlaybackController.next(fast = true)` → `sequencer.skipNext(fast)`. In-app callers keep fast=false. Test: NowPlayingRemoteNextTest (+3).
+- MINOR (inconsistent remote paths) → fixed after auditing every caller. PlaybackService's `SequencerControl` wrapper did not override `skipNextRemote` (fell to the slow default): now forwards. `RunTransportBus.Handler.next` and the Apple Music adapter `onSkipNext` are remote session paths: fast=true. `SequencerGameRunPlayer.skipNext` is in-app game logic: stays fast=false.
+- NIT (engine-level tests) → not done (optional).
+
+fixes applied. Tests: 7299 total, 0 failures (+3).
