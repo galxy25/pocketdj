@@ -32,8 +32,8 @@ interface DjSkipHooks {
  *    0.5 s to spare), glide / FX as at a song's end;
  *  - **pre-roll**: drop the pre-roll and fade now; PAUSED in the pre-roll the transition is abandoned and the immediate advance
  *    skips; a skip already pending for the run's incoming is the same skip (ignored);
- *  - **fade**: ignored - EXCEPT a `fast` press inside a skip's own crossfade, which finishes it over the 5 s sweep (the
- *    android "second tap upgrades" rule; no double-tap detector delays a tap);
+ *  - **fade**: ignored - EXCEPT a second press (any, in-app tap or remote) inside a skip's OWN crossfade, which finishes it
+ *    over the 5 s sweep (the android "second tap upgrades" rule; no double-tap detector delays a tap);
  *  - **post-roll**: the glide ends (the listener wins) and the skip mixes out of the new song.
  *
  * The pending skip is keyed on the run's incoming song; it is [consumeAtFadeStart]ed by the advance and cleared by every
@@ -89,8 +89,8 @@ class DjSkipMix(private val p: Port) {
         val fade = if (fast) DjMode.FAST_SKIP_FADE_SECONDS else p.skipFadeSeconds
         when (p.phase) {
             DjPhase.FADING -> {
-                if (fast && mixing && p.shortenFade(fade)) {
-                    p.log("skip upgraded to fast - fade now ${fmt(fade)}s song=$cur")
+                if (mixing && p.shortenFade(DjMode.FAST_SKIP_FADE_SECONDS)) {
+                    p.log("skip upgraded to fast - fade now ${fmt(DjMode.FAST_SKIP_FADE_SECONDS)}s song=$cur")
                     return DjSkipResult.HANDLED
                 }
                 p.log("skip ignored - fade in flight song=$cur")

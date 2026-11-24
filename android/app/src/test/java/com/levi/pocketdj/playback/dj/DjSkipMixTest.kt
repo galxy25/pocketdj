@@ -203,10 +203,17 @@ class DjSkipMixTest {
         assertTrue(p.logs.last().startsWith("skip ignored - fade in flight"))
     }
 
-    @Test fun aSlowPressDuringTheFadeNeverUpgrades() {
+    @Test fun aSecondInAppTapInsideTheSkipsCrossfadeUpgradesToo() {
         val (m, p) = skipMix()
         m.skip(false); m.consumeAtFadeStart("b")
         p.phase = DjPhase.FADING
+        assertEquals(DjSkipResult.HANDLED, m.skip(false))
+        assertEquals(listOf(5.0), p.shortened)
+        assertEquals(1, p.aways)
+    }
+
+    @Test fun aPressOnANaturalFadeIsNeverAnUpgrade() {
+        val (m, p) = skipMix(FakePort().also { it.phase = DjPhase.FADING })
         m.skip(false)
         assertTrue(p.shortened.isEmpty())
     }
