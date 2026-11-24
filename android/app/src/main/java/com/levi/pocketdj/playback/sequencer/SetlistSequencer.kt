@@ -1164,12 +1164,17 @@ class SetlistSequencer(
         held = true
         pendingResumeMs = resumeAtMs
         endNotedUid = null
-        queueEdited()
+        memberIds = null
+        val g = bumpQueueGeneration()
+        publish()
         val sid = this.sessionId
         if (sid != null) {
             val src = SourceRef(capturedContext?.source ?: PlayContext.SOURCE_SETLIST, sourceSetlistId, capturedContext?.contextName)
             hooks.emit { it.onSessionStarted(sid, src) }
         }
+        announceQueue(g)
+        reconcilePreload()
+        scheduleRipWindowReconcile()
         // HELD: features receive their stored state but arm nothing until the first play (onResumedFromHold).
         if (extras != null) sessionExtras.restoreHeld(extras) { log(it) }
         log("[session] held restore id=${this.sessionId} rows=${queue.size} index=${this.index}")
