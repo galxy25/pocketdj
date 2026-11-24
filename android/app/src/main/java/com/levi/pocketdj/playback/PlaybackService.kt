@@ -62,6 +62,7 @@ class PlaybackService : MediaLibraryService() {
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
         autoScope = scope
         val data = com.levi.pocketdj.auto.AppAutoData(app)
+        val forYouSource = com.levi.pocketdj.auto.AppAutoForYouSource(app)
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val cb = AutoLibraryCallback(
             tree = com.levi.pocketdj.auto.AutoBrowseTree(
@@ -70,6 +71,8 @@ class PlaybackService : MediaLibraryService() {
                 mix = app.shellGraph.shellActions.mixFacade?.let {
                     com.levi.pocketdj.auto.AutoMixTab(it, com.levi.pocketdj.auto.AppAutoMixExtras(app, it))
                 },
+                // SURF-7: the frozen For You tab (cached snapshot only; nothing refreshes or ranks on connect).
+                forYou = com.levi.pocketdj.auto.AutoForYou(forYouSource, data::song),
             ),
             addTargets = com.levi.pocketdj.auto.AutoAddTargets(com.levi.pocketdj.auto.AppAutoAddSink(app.collections)),
             player = com.levi.pocketdj.auto.AppAutoPlayer(app),
@@ -98,6 +101,12 @@ class PlaybackService : MediaLibraryService() {
             catalogReady = { data.catalogReady },
         )
         data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
+        // A phone-side refresh/commit of the cached feed re-notifies the open lists (the car itself never refreshes).
+        // Feed commits, thumbs and the release feed all change the tiles/rows; open fy:<tile> drill-ins are re-notified
+        // by the callback itself. Posted to main like every other library notification.
+        scope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            forYouSource.changes.collect { main.post { cb.notifyLibraryChanged() } }
+        }
         scope.launch {
             app.catalogRepository.state.first { it.catalog != null }
             cb.onCatalogReady()
@@ -716,7 +725,11 @@ class PlaybackService : MediaLibraryService() {
                 return Futures.immediateFuture(LibraryResult.ofItem(root, params))
             }
             // Q96: the root is static; the auto graph (AppGraph, data, tree) is built off Main and warms the catalog.
-            autoBg.launch { runCatching { auto.onConnect() } }
+            // SURF-7: the host's root-children cap (e.g. 4) decides whether Continue folds into Playlists.
+            val rootLimit = params?.extras
+                ?.getInt(AutoLibraryCallback.KEY_ROOT_CHILDREN_LIMIT, 0)
+                ?.takeIf { it > 0 }
+            autoBg.launch { runCatching { auto.setRootLimit(rootLimit); auto.onConnect() } }
             return Futures.immediateFuture(
                 LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(com.levi.pocketdj.auto.AutoAsync.STATIC_ROOT), params),
             )
