@@ -95,6 +95,8 @@ fun AlbumDetailScreen(
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
     var showAddSheet by remember { mutableStateOf(false) }
+    var showEditAlbum by remember { mutableStateOf(false) }
+    var showEditAudio by remember { mutableStateOf(false) }
     var trackMenuSongId by remember { mutableStateOf<String?>(null) }
     var trackAddSheet by remember { mutableStateOf(false) }
     val stemController = rememberCollectionBurnController(albumId)
@@ -301,6 +303,10 @@ fun AlbumDetailScreen(
                                     enabled = hasServer && tracks.isNotEmpty() && !stemState.working,
                                     modifier = Modifier.testTag("album-stemify"),
                                 ) { Text("Stemify") }
+                                OutlinedButton(
+                                    onClick = { showEditAlbum = true },
+                                    modifier = Modifier.testTag("edit-album"),
+                                ) { Text("Edit") }
                                 FilledTonalIconButton(
                                     onClick = { ShareText.send(context, ShareText.forAlbum(album), "${album.name} — ${album.artist}") },
                                     modifier = Modifier.testTag("album-share"),
@@ -363,7 +369,7 @@ fun AlbumDetailScreen(
                     }
 
                     if (!album.audioTracks.isNullOrEmpty()) {
-                        item(key = "audio-analysis") { AudioAnalysisSection(album) }
+                        item(key = "audio-analysis") { AudioAnalysisSection(album, onEdit = { showEditAudio = true }) }
                     }
                 }
             }
@@ -408,6 +414,13 @@ fun AlbumDetailScreen(
         }
     }
 
+    if (showEditAlbum) {
+        catalogState.catalog?.albumsById?.get(albumId)?.let { EditAlbumSheet(it, onDismiss = { showEditAlbum = false }) }
+    }
+    if (showEditAudio) {
+        catalogState.catalog?.albumsById?.get(albumId)?.let { EditAudioAnalysisSheet(it, onDismiss = { showEditAudio = false }) }
+    }
+
     if (showAddSheet) {
         AddToCollectionSheet(
             item = AddToItem.Album(albumId),
@@ -447,7 +460,7 @@ internal object AudioAnalysisFmt {
 }
 
 @Composable
-private fun AudioAnalysisSection(album: IndexAlbum) {
+private fun AudioAnalysisSection(album: IndexAlbum, onEdit: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(16.dp).testTag("album-audio-analysis")) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -459,6 +472,7 @@ private fun AudioAnalysisSection(album: IndexAlbum) {
             AudioAnalysisFmt.total(album.audioDurationSec)?.let {
                 Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            TextButton(onClick = onEdit, modifier = Modifier.testTag("edit-audio")) { Text("Edit") }
         }
         Spacer(Modifier.height(6.dp))
         album.audioTracks.orEmpty().forEachIndexed { i, seg ->

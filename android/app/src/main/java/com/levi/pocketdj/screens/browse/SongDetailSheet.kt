@@ -74,6 +74,7 @@ fun SongDetailSheet(
     val graph = remember { AppGraph.get(context) }
     val scope = rememberCoroutineScope()
     var showAddSheet by remember { mutableStateOf(false) }
+    var showEditSong by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
 
     val catalogState by graph.catalogRepository.state.collectAsState()
@@ -192,6 +193,10 @@ fun SongDetailSheet(
                     modifier = Modifier.testTag("song-share"),
                 ) {
                     Icon(Icons.Filled.Share, contentDescription = "Share")
+                }
+                Spacer(Modifier.width(4.dp))
+                androidx.compose.material3.TextButton(onClick = { showEditSong = true }, modifier = Modifier.testTag("edit-song")) {
+                    Text("Edit")
                 }
             }
 
@@ -334,6 +339,8 @@ fun SongDetailSheet(
             }
         }
     }
+
+    if (showEditSong && song != null) EditSongSheet(song, onDismiss = { showEditSong = false })
 
     if (showAddSheet) {
         AddToCollectionSheet(
