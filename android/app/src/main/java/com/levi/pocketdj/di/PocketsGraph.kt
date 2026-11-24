@@ -28,6 +28,7 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
                 val cat = app.catalogRepository.state.value.catalog
                 (cat?.songsById ?: emptyMap()) to (cat?.albumsById ?: emptyMap())
             }
+            c.catalogLoaded = { app.catalogRepository.state.value.catalog != null }
             c.collectionsInput = { app.collectionsGraph.pocketsCollectionsInput() }
             c.favoriteIds = { app.collectionsGraph.favorites.favoriteIds }
             c.setlistToPlaylist = { app.collections.setlists.associate { it.id to it.playlistId } }
@@ -61,13 +62,19 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
         for (c in clearers) runCatching { c() }
         if (cacheLazy.isInitialized()) runCatching { wheelCache.clearLocal() }
         else runCatching { cacheFile.delete() }
-        runCatching { app.servicesGraph.pocketPalette.clear() }
+        // Palette is cleared inside wheelCache.clearLocal (under the adopt lock); only the uninitialised path needs it here.
+        if (!cacheLazy.isInitialized()) runCatching { app.servicesGraph.pocketPalette.clear() }
     }
 
     /** First foreground: follow history revisions (one rebuild per launch, then debounced). Idempotent. */
     fun start() {
         val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
-        wheelCache.attach(history.state.map { it.revision }.distinctUntilChanged())
+        wheelCache.attach(
+            PocketMomentCache.gatedRevisions(
+                history.state.map { it.revision }.distinctUntilChanged(),
+                app.catalogRepository.state.map { it.catalog != null }.distinctUntilChanged(),
+            ),
+        )
     }
 
     override val resetHooks: List<ResetHook> = listOf(ResetHook { wheelClearLocal() })

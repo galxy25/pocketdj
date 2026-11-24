@@ -136,6 +136,42 @@ class PocketMomentCacheTest {
         assertTrue(cache().snapshot.value.isEmpty)
     }
 
+    @Test fun aBuildWithoutTheCatalogKeepsTheCachedWheel() = runTest {
+        val first = cache()
+        first.rebuildNow(); advanceUntilIdle()
+        val painted = first.snapshot.value
+        assertFalse(painted.isEmpty)
+        val second = cache(pal = PocketPaletteStore(File(tmp.root, "other-palette.json")))
+        second.catalogLoaded = { false }
+        second.rebuildNow(); advanceUntilIdle()
+        assertEquals("cached wheel survives", painted, second.snapshot.value)
+        assertTrue("cache file kept", cacheFile().exists())
+    }
+
+    @Test fun gatedRevisionsRebuildOnceTheCatalogLands() = runTest {
+        val builds = AtomicInteger(0)
+        val loaded = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val revs = kotlinx.coroutines.flow.MutableStateFlow(3)
+        val c = cache(engine = { builds.incrementAndGet(); PocketMomentEngine.build(it) })
+        c.historyRevision = { 3 }
+        c.catalogLoaded = { loaded.value }
+        c.attach(PocketMomentCache.gatedRevisions(revs, loaded)); runCurrent()
+        advanceTimeBy(6_000); runCurrent()
+        assertEquals("no build before the catalog", 0, builds.get())
+        loaded.value = true
+        advanceTimeBy(6_000); runCurrent()
+        assertEquals("catalog landing triggers the rebuild", 1, builds.get())
+    }
+
+    @Test fun clearLocalAlsoClearsThePalette() = runTest {
+        val pal = palette()
+        val c = cache(pal = pal)
+        c.rebuildNow(); advanceUntilIdle()
+        assertTrue(pal.entries.isNotEmpty())
+        c.clearLocal()
+        assertTrue(pal.entries.isEmpty())
+    }
+
     @Test fun clearLocalDropsSnapshotAndFile() = runTest {
         val c = cache()
         c.rebuildNow(); advanceUntilIdle()

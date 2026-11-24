@@ -17,3 +17,13 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MAJOR no catalog-landed trigger -> fixed: `PocketMomentCache.gatedRevisions` (revision flow combined with catalog-loaded flow) is attached in `PocketsGraph.start`; `rebuildNow` also skips when history is non-empty and `catalogLoaded()` is false. Tests: aBuildWithoutTheCatalogKeepsTheCachedWheel, gatedRevisionsRebuildOnceTheCatalogLands.
+- MINOR empty build deletes cache -> fixed: no build/adopt while the catalog is absent (same guard), so the cache survives.
+- MINOR palette cleared outside lock -> fixed: `palette.clear()` now inside `clearLocal` under fileLock (graph clears it only when cache uninitialised). Test: clearLocalAlsoClearsThePalette.
+- NIT lazy cache IO on main -> not changed (start() touches wheelCache first, from the IO intent sink).
+
+fixes applied
+
+state: reviewed

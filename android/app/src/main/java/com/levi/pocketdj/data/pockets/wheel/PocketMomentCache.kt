@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -66,6 +68,8 @@ class PocketMomentCache(
     var cloudPatterns: () -> List<PocketMomentEngine.CloudPatternRef> = { emptyList() }
     /** Ids of collections that exist right now; null = unknown (catalog not loaded), nothing is freed. */
     var liveCollectionIds: () -> Set<String>? = { null }
+    /** False while the catalog has not landed: a build then has no song info, so it must not replace the wheel. */
+    var catalogLoaded: () -> Boolean = { true }
     var nowMs: () -> Double = { System.currentTimeMillis().toDouble() }
 
     /** The app's automatic rebuilds. Off in hosts that drive their own builds. */
@@ -110,6 +114,8 @@ class PocketMomentCache(
             try {
                 val rev = historyRevision()
                 val events = historyEvents()
+                // No catalog yet: keep the cached/current wheel; a catalog-landed trigger rebuilds later.
+                if (events.isNotEmpty() && !catalogLoaded()) return
                 val (songs, albums) = catalogSnapshot()
                 val colls = collectionsInput()
                 val favs = favoriteIds()
@@ -160,6 +166,8 @@ class PocketMomentCache(
             pinnedForDemo = false
             runCatching { file.delete() }
             runCatching { File(file.parentFile, file.name + ".tmp").delete() }
+            // Under the same lock as adoptIf so an in-flight adopt cannot re-assign palette slots afterwards.
+            runCatching { palette.clear() }
         }
     }
 
@@ -180,6 +188,12 @@ class PocketMomentCache(
     companion object {
         const val FILE_NAME = "pocketdj-pocket-wheel-cache.json"
         const val DEBOUNCE_MS = 5_000L
+
+        /** History revisions that only flow once the catalog is loaded; the catalog landing re-emits the latest. */
+        fun gatedRevisions(revisions: Flow<Int>, catalogLoaded: Flow<Boolean>): Flow<Int> =
+            kotlinx.coroutines.flow.combine(revisions, catalogLoaded) { r, l -> r to l }
+                .filter { it.second }
+                .map { it.first }
 
         /**
          * Off-main: catalog + collections + history -> the engine's input. Only songs in the history are
