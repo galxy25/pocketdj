@@ -1,11 +1,11 @@
 package com.levi.pocketdj.data.pockets.wheel
 
 import com.levi.pocketdj.mix.model.MixLoadable
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import org.junit.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 
 class PocketRunMixPathTest {
     private fun row(i: Int, c: String? = null) = PocketRunPlanner.Row("s$i", i + 1, c, 1.0)
