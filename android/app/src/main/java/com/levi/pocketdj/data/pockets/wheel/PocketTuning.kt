@@ -12,8 +12,8 @@ import kotlin.math.pow
  * What a pocket run LEARNS (iOS `PocketTuning`): per-feature evidence from the run's verdicts turned into score
  * multipliers, an artist ban for the rest of the run, and a negative timbre profile; plus the cross-run fold. PURE.
  *
- * P2-POC-7 lands the planner-facing half (Features, Evidence, Multipliers, formulas, fold) because the planner scores
- * with [Multipliers]; P2-POC-8 owns this file and adds `verdicts(from play history)` and the store wiring.
+ * P2-POC-7 landed the planner-facing half (Features, Evidence, Multipliers, formulas, fold) because the planner scores
+ * with [Multipliers]; P2-POC-8 added [verdicts] (History -> verdicts) and the run store wiring.
  */
 object PocketTuning {
 
@@ -129,6 +129,28 @@ object PocketTuning {
             e.skippedVectors.map { SimilarityFamilies.TimbreMember(it, 1.0) }, minVectors = 1,
         )
         return Multipliers(byKey, banned, neg)
+    }
+
+    /**
+     * Every pocket-run play in History as a verdict (iOS `PocketTuning.verdicts(from:)`), tagged with its run id.
+     * [excludingRun] drops one run (its own evidence is added live), [excludingEvent] the sounding row whose verdict is
+     * still pending. Order follows [events].
+     */
+    fun verdicts(
+        events: List<com.levi.pocketdj.data.history.PlayEvent>,
+        excludingRun: String? = null,
+        excludingEvent: String? = null,
+    ): List<Pair<String, Verdict>> = events.mapNotNull { e ->
+        val tag = e.pocketRun ?: return@mapNotNull null
+        if (tag.runId == excludingRun || e.id == excludingEvent) return@mapNotNull null
+        tag.runId to Verdict(
+            songId = com.levi.pocketdj.data.edition.SongVariant.baseId(e.songId),
+            skipped = e.wasSkipped == true,
+            fraction = e.listenedFraction,
+            atMs = e.playedAt,
+            momentKey = tag.momentKey,
+            rowCollectionId = tag.rowCollectionId,
+        )
     }
 
     /** One run's evidence from its verdicts. */
