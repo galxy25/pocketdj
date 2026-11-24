@@ -10,7 +10,7 @@ add-time scale, round6, top-N, weighted percentile), PocketProfile (@Serializabl
 - [x] tests: PocketMomentEngineTest (iOS tests ported one to one on the shared fixture, copied byte-identical to
   src/test/resources/fixtures/pocket-wheel-history.json, plus mega-by-library-share, membership curve, round6/percentile),
   PocketWheelModelsTest
-- Test count: full suite 6195, 0 failures (new files add 34 tests); testDebugUnitTest + assembleDebug green. assembleRelease not run (no manifest/gradle/proguard/library change).
+- Test count: full suite 6195, 0 failures (new files add 30 tests (18 engine + 12 models)); testDebugUnitTest + assembleDebug green. assembleRelease not run (no manifest/gradle/proguard/library change).
 
 ## Deviations
 - SF-symbol `symbol` on PocketMode omitted (UI package maps icons).
