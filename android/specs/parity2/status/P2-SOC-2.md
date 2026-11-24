@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-SOC-2 — Profile sync go-live code (dormant)
 
@@ -15,3 +15,12 @@ state: implemented
 
 ## Questions for Levi
 - Publish the endpoints doc with profileSyncBase? Default: no, code ships dormant.
+
+## Review
+fixes applied
+- MINOR QrScanner camera bound after dispose -> fixed (disposed flag checked in listener; clearAnalyzer before executor shutdown)
+- MINOR shared MultiFormatReader -> fixed (decode guarded by synchronized(reader))
+- NIT luminance rows -> fixed (uses frame height, pads buffer if short)
+- NIT parked deep-link code lifetime -> not changed (optional; harmless)
+- NIT deleteProfile wiring test -> not added (optional; wiring verified at ServicesGraph)
+- No new tests: fixes are camera/threading lifecycle, not unit-testable (no MAJOR). Suite 7845, 0 failures.

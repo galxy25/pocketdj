@@ -93,13 +93,17 @@ private fun ScannerPreview(onCode: (String) -> Unit) {
     DisposableEffect(owner) {
         val future = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
+        var disposed = false
+        var analysisRef: ImageAnalysis? = null
         future.addListener({
+            if (disposed) return@addListener
             val p = runCatching { future.get() }.getOrNull() ?: return@addListener
             provider = p
             val preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
+            analysisRef = analysis
             analysis.setAnalyzer(executor) { image ->
                 val code = decodeLinkCode(image)
                 if (code != null && !delivered) {
@@ -113,6 +117,8 @@ private fun ScannerPreview(onCode: (String) -> Unit) {
             }
         }, ContextCompat.getMainExecutor(context))
         onDispose {
+            disposed = true
+            analysisRef?.clearAnalyzer()
             provider?.unbindAll()
             executor.shutdown()
         }
@@ -128,11 +134,12 @@ private val reader = MultiFormatReader().apply {
 private fun decodeLinkCode(image: ImageProxy): String? = image.use {
     val plane = it.planes[0]
     val buf = plane.buffer
-    val data = ByteArray(buf.remaining()).also { b -> buf.get(b) }
+    val raw = ByteArray(buf.remaining()).also { b -> buf.get(b) }
     val rowStride = plane.rowStride
-    val rows = data.size / rowStride
-    runCatching {
+    val rows = maxOf(it.height, raw.size / rowStride)
+    val data = if (raw.size >= rowStride * rows) raw else raw.copyOf(rowStride * rows)
+    synchronized(reader) { runCatching {
         val src = PlanarYUVLuminanceSource(data, rowStride, rows, 0, 0, minOf(it.width, rowStride), minOf(it.height, rows), false)
         LinkScan.extract(reader.decodeWithState(BinaryBitmap(HybridBinarizer(src))).text)
-    }.also { reader.reset() }.getOrNull()
+    }.also { reader.reset() }.getOrNull() }
 }
