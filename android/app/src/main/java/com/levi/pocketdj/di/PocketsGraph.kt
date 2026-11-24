@@ -49,6 +49,26 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
     /** The app-scoped wheel snapshot cache. First touch reads the (small) cache file: build off-main. */
     val wheelCache: PocketMomentCache by cacheLazy
 
+    /**
+     * The centre-play-button brain (P2-POC-6). Its `play` seam is wired by the run store (P2-POC-7); until then
+     * `playBest` reports "nothing started". Cheap to build: every input is a lambda read at refresh time.
+     */
+    val wheelController: com.levi.pocketdj.data.pockets.wheel.PocketWheelController by lazy {
+        val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
+        com.levi.pocketdj.data.pockets.wheel.PocketWheelController(
+            snapshot = { wheelCache.snapshot.value },
+            historyEvents = { history.events },
+        ).also { c ->
+            c.carConnected = { app.collectionsGraph.carConnected() == true }
+            c.contextGuess = { runCatching { app.collectionsGraph.listeningContextProvider.currentContextGuess() }.getOrNull() }
+            c.cloudResults = {
+                val svc = app.collectionsGraph.listeningPockets
+                if (svc.isEnabled) svc.results.value else null
+            }
+            c.emptyFallback = { emptyFallbackProfile(history.events, app.collectionsGraph.favorites.favoriteIds.isNotEmpty()) }
+        }
+    }
+
     private val clearers = CopyOnWriteArrayList<() -> Unit>()
 
     /** Extra device-local wheel state (pocket run store, motion timeline + opt-in) that [wheelClearLocal] must wipe. */
@@ -78,4 +98,26 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
     }
 
     override val resetHooks: List<ResetHook> = listOf(ResetHook { wheelClearLocal() })
+
+    companion object {
+        /**
+         * T4 of the best-match ladder: the most recently played collection, else Favorites (iOS `emptyFallback`).
+         * Pure so it is testable; [hasFavorites] is read by the caller.
+         */
+        internal fun emptyFallbackProfile(
+            events: List<com.levi.pocketdj.data.history.PlayEvent>,
+            hasFavorites: Boolean,
+        ): com.levi.pocketdj.data.pockets.wheel.PocketProfile? {
+            val recent = events.asReversed().firstOrNull { it.originCollectionId != null && it.source != com.levi.pocketdj.data.history.PlaySource.GAME }
+            val (id, name) = when {
+                recent != null -> recent.originCollectionId!! to (recent.contextName ?: "Your last collection")
+                hasFavorites -> com.levi.pocketdj.data.pockets.wheel.PocketWheelIds.FAVORITES to com.levi.pocketdj.data.pockets.wheel.PocketWheelIds.FAVORITES_NAME
+                else -> return null
+            }
+            return com.levi.pocketdj.data.pockets.wheel.PocketProfile(
+                tier = com.levi.pocketdj.data.pockets.wheel.PocketProfile.Tier.EMPTY,
+                caption = "Getting to know you", detail = name, collections = mapOf(id to 1.0),
+            )
+        }
+    }
 }

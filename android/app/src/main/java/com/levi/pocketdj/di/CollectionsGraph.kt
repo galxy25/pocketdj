@@ -642,7 +642,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** Car-projection signal: UI_MODE_TYPE_CAR only (a phone running Android Auto is not detectable without the car-app library). */
-    private fun carConnected(): Boolean? = runCatching {
+    internal fun carConnected(): Boolean? = runCatching {
         val ui = app.appContext.getSystemService(android.content.Context.UI_MODE_SERVICE) as android.app.UiModeManager
         ui.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_CAR
     }.getOrNull()
