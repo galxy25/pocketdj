@@ -31,6 +31,7 @@ data class WorkPlan(
     val uniqueName: String,
     val intervalMinutes: Long,
     val requiresConnected: Boolean,
+    val requiresBatteryNotLow: Boolean = false,
     val policy: ExistingPeriodicWorkPolicy = ExistingPeriodicWorkPolicy.KEEP,
 )
 
@@ -43,6 +44,7 @@ object WorkSchedulerPolicy {
                 // WorkManager floors periodic work at 15 min.
                 intervalMinutes = it.repeatMinutes.coerceAtLeast(PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS / 60_000),
                 requiresConnected = it.requiresNetwork,
+                requiresBatteryNotLow = it.requiresBatteryNotLow,
             )
         }
 }
@@ -91,6 +93,7 @@ class WorkScheduler(
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(if (e.plan.requiresConnected) NetworkType.CONNECTED else NetworkType.NOT_REQUIRED)
+                        .setRequiresBatteryNotLow(e.plan.requiresBatteryNotLow)
                         .build(),
                 )
                 .build()
