@@ -217,6 +217,7 @@ dependencies {
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.media3.common)
     implementation(libs.play.services.location)
+    implementation(libs.play.services.nearby) // P2-REM-9: Remote over Nearby Connections
 
     // STU-2: Oboe low-latency output (prefab; linked from cpp/pdjdsp).
     implementation(libs.oboe)

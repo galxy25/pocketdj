@@ -36,6 +36,9 @@ sealed interface DeepLink {
     /** A `.pdjdiagkey` file; SVC-5's own handler consumes it, the dispatcher ignores it. */
     data class DiagKey(val uri: String) : DeepLink
 
+    /** P2-REM-9: `pocketdj://remote/join/<token>` (the Nearby invite QR). */
+    data class RemoteJoin(val token: String) : DeepLink
+
     /** One of our add/automix links whose target couldn't be resolved (e.g. a spoken name): surfaces [message]. */
     data class Unresolved(val message: String) : DeepLink
 
@@ -78,6 +81,8 @@ object DeepLinkParser {
 
     /** The server's session-id shape (`genId`, jukebox-server.mjs): base32, 4–32 chars. */
     private val ID_RE = Regex("^[a-z2-7]{4,32}$")
+
+    private val REMOTE_TOKEN_RE = Regex("^[A-Za-z0-9_-]{4,64}$")
 
     fun isValidId(s: String): Boolean = ID_RE.matches(s)
 
@@ -145,6 +150,9 @@ object DeepLinkParser {
                 }
                 DeepLink.AutoMix(source, truthy(query["shuffle"]))
             }
+            "remote" -> if (arg.equals("join", ignoreCase = true)) {
+                parts.getOrNull(2)?.trim()?.takeIf { REMOTE_TOKEN_RE.matches(it) }?.let { DeepLink.RemoteJoin(if (it.length <= 8) it.uppercase() else it) } ?: DeepLink.None
+            } else DeepLink.None
             "games" -> when {
                 arg.isNullOrBlank() -> DeepLink.Navigate(ShellRoute.Tab(PocketDjDestination.Games))
                 else -> GameLink.fromToken(arg)?.let { DeepLink.Game(it) } ?: DeepLink.None

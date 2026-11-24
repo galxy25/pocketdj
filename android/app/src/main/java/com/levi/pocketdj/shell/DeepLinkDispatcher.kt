@@ -43,6 +43,8 @@ class DeepLinkSeams {
     @Volatile var importCollection: ((uri: String) -> Unit)? = null
     @Volatile var mwf: ((DeepLink.Mwf) -> Unit)? = null
     @Volatile var game: ((GameLink) -> Unit)? = null
+    /** P2-REM-9: a Remote invite link; default parks the token in [DeepLinkDispatcher.pendingRemoteJoin] and opens the Jukebox tab. */
+    @Volatile var remoteJoin: ((token: String) -> Unit)? = null
 }
 
 /**
@@ -65,6 +67,13 @@ class DeepLinkDispatcher(
     val pendingMwf: StateFlow<DeepLink.Mwf?> = _pendingMwf
 
     fun takePendingMwf(): DeepLink.Mwf? = _pendingMwf.getAndUpdate { null }
+
+    private val _pendingRemoteJoin = MutableStateFlow<String?>(null)
+
+    /** A Remote invite token nobody has consumed yet (the Remote screen takes it with [takePendingRemoteJoin]). */
+    val pendingRemoteJoin: StateFlow<String?> = _pendingRemoteJoin
+
+    fun takePendingRemoteJoin(): String? = _pendingRemoteJoin.getAndUpdate { null }
 
     private val _pendingGame = MutableStateFlow<GameLink?>(null)
 
@@ -122,6 +131,13 @@ class DeepLinkDispatcher(
             is DeepLink.Mwf -> {
                 val consumer = seams.mwf
                 if (consumer != null) consumer(link) else _pendingMwf.value = link
+            }
+            is DeepLink.RemoteJoin -> {
+                val join = seams.remoteJoin
+                if (join != null) join(link.token) else {
+                    _pendingRemoteJoin.value = link.token
+                    postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
+                }
             }
             is DeepLink.Game -> {
                 val opener = seams.game

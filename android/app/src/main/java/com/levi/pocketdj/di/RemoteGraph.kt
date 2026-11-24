@@ -57,6 +57,11 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** P2-REM-9: the Nearby Connections starter the Remote screen drives. */
+    val nearbyStarter: com.levi.pocketdj.remote.NearbyRemoteStarter by lazy {
+        com.levi.pocketdj.remote.NearbyRemoteStarter(app.appContext, controller, mainScope, ::deviceName)
+    }
+
     /** DJ Mode's suspension input: a session is attached. */
     val probe: RemoteSessionProbe by lazy {
         object : RemoteSessionProbe {
@@ -71,6 +76,7 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
     fun wire() {
         if (wired) return
         wired = true
+        com.levi.pocketdj.screens.remote.RemoteStarters.current = nearbyStarter // P2-REM-9
         val gate = RemoteControllerGate.shared
         gate.isController = { controller.isActive.value && controller.localRole.value == com.levi.pocketdj.remote.RemoteDeviceRole.CONTROLLER }
         gate.forwarder = { controller.interceptLocalTransport(it) }
