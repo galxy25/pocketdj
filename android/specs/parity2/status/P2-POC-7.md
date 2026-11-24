@@ -22,3 +22,11 @@ fav_songs 0.75, genre category (other -> nil), credit artist keys, startsInstant
 
 ## Questions for Levi
 - one-at-a-time.sh free-memory guard stalls builds here; ran with FIN_MIN_FREE_GB=5 (same as POC-1/3).
+
+## Review
+- MINOR PocketTuning.kt ownership / add-add conflict: acknowledged, not changeable in code. Features, Multipliers, Evidence, fold signatures are kept identical to iOS so POC-8 only appends verdicts(from:), rowsNeeded and tests. Merge owner: land POC-8 first or reconcile this file by keeping the union (this file's content is the base, POC-8 appends).
+- MINOR tie-break divergence from iOS (top-10 artists, replan/topUp, neighbour scoring): kept the deterministic id/key tie-break on purpose. The P2-POC-14 golden fixture must avoid equal-weight ties or document the divergence. Recorded here as a hand-off.
+- NIT prefix freshness: fixed, added everyPrefixStaysAtLeastSixtyPercentFreshOnAHeavilyRecentPocket (3 seeds, every prefix k has >= floor(0.6k) fresh). Instant-lead fallback test not added.
+- Suite: 6429 tests, 0 failures (was 6428); testDebugUnitTest + assembleDebug green.
+
+fixes applied

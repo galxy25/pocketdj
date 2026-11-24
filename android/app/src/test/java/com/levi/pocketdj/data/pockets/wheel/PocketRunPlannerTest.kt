@@ -65,6 +65,22 @@ class PocketRunPlannerTest {
             PocketRunPlanner.plan(PocketRunPlanner.Input(profile(), universe(), excluded, tuning = tuning, seed = seed))
     }
 
+    @Test fun everyPrefixStaysAtLeastSixtyPercentFreshOnAHeavilyRecentPocket() {
+        val u = universe()
+        // 70% of the pocket's own crate was played recently; the rest of the library is fresh.
+        val recency = u.keys.filter { it.startsWith("pot_") && it.removePrefix("pot_").toInt() % 10 < 7 }.associateWith { 1.0 }
+        for (seed in listOf(1uL, 42uL, 99uL)) {
+            val rows = PocketRunPlanner.plan(PocketRunPlanner.Input(profile(), u, emptySet(), recency = recency, seed = seed)).rows
+            assertEquals(100, rows.size)
+            var fresh = 0
+            rows.forEachIndexed { i, r ->
+                if ((recency[r.songId] ?: 0.0) <= 0) fresh++
+                val k = i + 1
+                assertTrue("seed $seed prefix $k has $fresh fresh", fresh >= Math.floor(PocketRunPlanner.FRESH_FLOOR * k).toInt())
+            }
+        }
+    }
+
     @Test fun constantsMatchIos() {
         with(PocketRunPlanner) {
             assertEquals(100, SLOTS); assertEquals(6, ARTIST_CAP); assertEquals(4, ARTIST_SPACING)
