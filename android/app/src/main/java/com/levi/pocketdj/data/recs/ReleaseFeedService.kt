@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.recs
 
+import com.levi.pocketdj.screens.foryou.kindClass
 import java.io.File
 import java.io.IOException
 import kotlin.math.min
@@ -70,7 +71,14 @@ sealed interface ReleaseEmptyReason {
  * The "New" tile's engine: what the artists the owner plays have released in the last 30 days (port of
  * iOS `ReleaseFeedService`).
  *
- *  - ONE endpoint: `GET /v1/catalog/us/artists?ids=<=50&views=latest-release,similar-artists`.
+ *  - ONE batch endpoint, EVERY release: `GET /v1/catalog/us/artists?ids=<=50&include=albums&limit[albums]=25
+ *    &sort[albums]=-releaseDate&fields[...]`. Each artist's list comes back newest first, so an album followed
+ *    by a newer single no longer loses the album. Measured 2026-11-23 (50 artists): ~0.6 MB / 0.8-0.9 s vs
+ *    1.1-1.2 MB / 1.4-1.9 s for the old `views=latest-release,similar-artists`. Similar artists LEFT the request
+ *    (adding albums to it gave HTTP 504s on 1-4 of 8 batches; nothing in production reads them - the cached
+ *    values are carried forward). A saturated artist (25 in-window rows + `next`) gets one
+ *    `/artists/{id}/albums` follow-up inside the same permit, so in-flight stays <= 2.
+ *    Design: docs/design/new-feed-all-releases.md.
  *  - LAZY, ON-PLAY: [noteArtistPlayed] is the only steady-state trigger; reading ([feed]) is a pure
  *    filter over the cache and never fires HTTP.
  *  - [drain] is single-flight (`isFetching`), which is what makes the 2-in-flight cap GLOBAL: a 429
@@ -94,7 +102,8 @@ class ReleaseFeedService(
 ) {
     private val lock = Any()
 
-    private val entries = HashMap<Int, ArtistReleaseEntry>()
+    /** artistId -> that artist's releases, NEWEST FIRST; `[0]` is the head (TTL clock, name, similar). */
+    private val entries = HashMap<Int, List<ArtistReleaseEntry>>()
     private var seededAtMs: Double? = null
     private var isFetching = false
     private var isSeeding = false
@@ -119,6 +128,12 @@ class ReleaseFeedService(
     /** Does he already have this record in ANOTHER VERSION (Deluxe, remix)? (artistId, artistName, title). */
     @Volatile var ownsReleaseVersion: ((Int, String, String) -> Boolean)? = null
 
+    /** Does he have a verdict on this feedback id (`rel:<id>`) in the New scope? Only picks which twin represents a record. */
+    @Volatile var hasVerdict: ((String) -> Boolean)? = null
+
+    /** "Prefer explicit versions". Unset = clean. */
+    @Volatile var prefersExplicit: (() -> Boolean)? = null
+
     init {
         load()
     }
@@ -130,20 +145,30 @@ class ReleaseFeedService(
      * filtered HERE (read time), so an album added today drops out immediately with no refetch.
      */
     fun feed(nowMs: Double = clock()): List<ReleaseFeedItem> {
-        val snapshot = synchronized(lock) { entries.values.toList() }
+        val snapshot = synchronized(lock) { entries.values.flatten() }
         val own = ownsRelease
         val ownVersion = ownsReleaseVersion
-        return snapshot.mapNotNull { e ->
-            val at = e.releaseAtMs ?: return@mapNotNull null
-            val status = ReleaseFeedPolicy.classify(at, nowMs) ?: return@mapNotNull null
-            // No store id = cannot be matched against the catalog OR opened: nothing to do with the row.
-            val releaseId = e.releaseId ?: return@mapNotNull null
-            val identity = ReleaseIdentity(releaseId, e.artistId, e.artistName, e.releaseName)
-            if (own?.invoke(identity) == true) return@mapNotNull null
-            val name = e.releaseName
-            if (name != null && ownVersion?.invoke(e.artistId, e.artistName, name) == true) return@mapNotNull null
-            ReleaseFeedItem(e, status)
-        }.sortedByDescending { it.entry.releaseAtMs ?: 0.0 }
+        // Flatten -> window -> one row per release id -> collapse editions/twins -> ownership per group -> sort.
+        // No store id = cannot be matched against the catalog OR opened: nothing to do with the row.
+        val inWindow = snapshot.filter { e ->
+            val at = e.releaseAtMs
+            at != null && e.releaseId != null && ReleaseFeedPolicy.classify(at, nowMs) != null
+        }
+        val groups = ReleaseFeedDedupe.collapse(
+            ReleaseFeedDedupe.acrossArtists(inWindow), hasVerdict, prefersExplicit,
+            isAlbumBucket = { it.kindClass.isAlbumBucket },
+        )
+        return groups.mapNotNull { g ->
+            // Owning ANY twin / edition is owning the record, so the whole group drops.
+            for (e in g.members) {
+                val releaseId = e.releaseId ?: continue
+                if (own?.invoke(ReleaseIdentity(releaseId, e.artistId, e.artistName, e.releaseName)) == true) return@mapNotNull null
+                val name = e.releaseName
+                if (name != null && ownVersion?.invoke(e.artistId, e.artistName, name) == true) return@mapNotNull null
+            }
+            val status = ReleaseFeedPolicy.classify(g.rep.releaseAtMs ?: return@mapNotNull null, nowMs) ?: return@mapNotNull null
+            ReleaseFeedItem(g.rep, status, g.alternates.mapNotNull { it.releaseId })
+        }.sortedWith(compareByDescending<ReleaseFeedItem> { it.entry.releaseAtMs ?: 0.0 }.thenBy { it.id })
     }
 
     fun outNow(nowMs: Double = clock()): List<ReleaseFeedItem> = feed(nowMs).filter { it.status == ReleaseStatus.OUT_NOW }
@@ -160,7 +185,7 @@ class ReleaseFeedService(
         val out = ArrayList<Int>()
         val seen = HashSet(artistIds)
         synchronized(lock) {
-            for (id in artistIds) for (s in entries[id]?.similarArtistIds.orEmpty()) if (seen.add(s)) out += s
+            for (id in artistIds) for (s in entries[id]?.firstOrNull()?.similarArtistIds.orEmpty()) if (seen.add(s)) out += s
         }
         return out
     }
@@ -170,7 +195,11 @@ class ReleaseFeedService(
     val seededAt: Double? get() = synchronized(lock) { seededAtMs }
     val cachedArtistCount: Int get() = synchronized(lock) { entries.size }
     val pendingCount: Int get() = synchronized(lock) { pending.size }
-    fun entry(artistId: Int): ArtistReleaseEntry? = synchronized(lock) { entries[artistId] }
+    /** The artist's head row (newest release, or the bare "checked, nothing" row). */
+    fun entry(artistId: Int): ArtistReleaseEntry? = synchronized(lock) { entries[artistId]?.firstOrNull() }
+
+    /** Every cached release of the artist, newest first. */
+    fun releases(artistId: Int): List<ArtistReleaseEntry> = synchronized(lock) { entries[artistId].orEmpty() }
 
     // ---- first population: the one-shot listening seed ---------------------------------------
 
@@ -225,7 +254,7 @@ class ReleaseFeedService(
     fun recheckKnownArtists() {
         synchronized(lock) {
             if (!(canSync && !isFetching && !isSeeding && entries.isNotEmpty())) return
-            for ((id, e) in entries) pending[id] = e.artistName
+            for ((id, rows) in entries) pending[id] = rows.firstOrNull()?.artistName.orEmpty()
             if (pending.isEmpty()) return
             bump()
         }
@@ -241,7 +270,7 @@ class ReleaseFeedService(
         if (!canSync) return
         val plays = playsForArtist?.invoke(artistId) ?: 0
         val arm = synchronized(lock) {
-            if (ReleaseFeedPolicy.isDue(entries[artistId]?.checkedAtMs, plays, nowMs)) pending[artistId] = name
+            if (ReleaseFeedPolicy.isDue(entries[artistId]?.firstOrNull()?.checkedAtMs, plays, nowMs)) pending[artistId] = name
             pending.isNotEmpty()
         }
         if (arm) scheduleDrain()
@@ -331,17 +360,11 @@ class ReleaseFeedService(
 
     private class BatchOutcome(val ids: List<Int>, val entries: List<ArtistReleaseEntry>, val succeeded: Boolean)
 
-    /** One batch, with backoff (only 429 / 5xx / IO are retried; 5 attempts, exponential + jitter). */
-    private suspend fun fetchBatch(ids: List<Int>): BatchOutcome {
-        val failed = BatchOutcome(ids, emptyList(), false)
-        if (ids.isEmpty()) return BatchOutcome(ids, emptyList(), true)
-        val t = transport ?: return failed
-        val url = requestUrl(ids)
+    /** One request with backoff (only 429 / 5xx / IO are retried; 5 attempts, exponential + jitter). Null = gave up. */
+    private suspend fun fetchWithBackoff(t: ReleaseFeedTransport, url: String): String? {
         for (attempt in 0 until MAX_ATTEMPTS) {
             try {
-                val body = t.fetch(url)
-                val parsed = ArtistsCatalogResponse.parse(body, clock()) ?: return failed
-                return BatchOutcome(ids, parsed, true)
+                return t.fetch(url)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -350,7 +373,7 @@ class ReleaseFeedService(
                     is IOException -> true // offline / timeout: transient by nature
                     else -> false
                 }
-                if (!retryable || attempt >= MAX_ATTEMPTS - 1) return failed
+                if (!retryable || attempt >= MAX_ATTEMPTS - 1) return null
                 // Exponential plus jitter: the two in-flight batches hit one limiter, and an unjittered
                 // schedule would wake them in lockstep - reproducing the burst that caused the 429.
                 val base = min(30.0, 2.0.pow(attempt + 1))
@@ -358,7 +381,24 @@ class ReleaseFeedService(
                 delay((waitSec * 1000).toLong().coerceAtLeast(0))
             }
         }
-        return failed
+        return null
+    }
+
+    /** One batch (plus any overflow follow-ups, sequentially inside the SAME permit so in-flight stays <= 2). */
+    private suspend fun fetchBatch(ids: List<Int>): BatchOutcome {
+        val failed = BatchOutcome(ids, emptyList(), false)
+        if (ids.isEmpty()) return BatchOutcome(ids, emptyList(), true)
+        val t = transport ?: return failed
+        val body = fetchWithBackoff(t, requestUrl(ids)) ?: return failed
+        val now = clock()
+        val rows = ArtistsCatalogResponse.parse(body, now)?.toMutableList() ?: return failed
+        // A failed follow-up keeps the 25: losing release 26+ for one check beats re-queuing fifty artists.
+        for (artistId in ArtistsCatalogResponse.saturatedArtistIds(body, ALBUMS_PER_ARTIST, now)) {
+            val page = fetchWithBackoff(t, overflowUrl(artistId)) ?: continue
+            val name = rows.firstOrNull { it.artistId == artistId }?.artistName.orEmpty()
+            ArtistsCatalogResponse.parseAlbumsPage(page, artistId, name, now)?.let { rows += it }
+        }
+        return BatchOutcome(ids, rows, true)
     }
 
     /**
@@ -369,33 +409,35 @@ class ReleaseFeedService(
      */
     private fun apply(outcome: BatchOutcome, fallbackNames: Map<Int, String>) {
         if (!outcome.succeeded) {
-            for (id in outcome.ids) pending[id] = fallbackNames[id] ?: entries[id]?.artistName ?: ""
+            for (id in outcome.ids) pending[id] = fallbackNames[id] ?: entries[id]?.firstOrNull()?.artistName ?: ""
             lastError = "Couldn't check ${outcome.ids.size} artists for new releases."
             bump()
             return
         }
         lastError = null
         val now = clock()
-        val returned = HashSet<Int>()
-        for (raw in outcome.entries) {
-            var e = raw
-            returned += e.artistId
-            if (e.artistName.isEmpty()) e = e.copy(artistName = fallbackNames[e.artistId].orEmpty())
-            // Carry a known similar list forward when this response had none: a sparse answer never
-            // erases good data.
-            if (e.similarArtistIds == null) {
-                val prior = entries[e.artistId]
-                e = e.copy(similarArtistIds = prior?.similarArtistIds, similarCheckedAtMs = prior?.similarCheckedAtMs)
+        val byArtist = ReleaseFeedCache.group(outcome.entries)
+        for ((id, fetched) in byArtist) {
+            // The fetched list is AUTHORITATIVE: a withdrawn or re-id'd pre-order disappears.
+            var meta = fetched[0]
+            val prior = entries[id]?.firstOrNull()
+            if (meta.artistName.isEmpty()) meta = meta.copy(artistName = fallbackNames[id] ?: prior?.artistName.orEmpty())
+            // Carry a known similar list forward when this response had none (this request no longer asks):
+            // a sparse answer never erases good data.
+            if (meta.similarArtistIds == null) {
+                meta = meta.copy(similarArtistIds = prior?.similarArtistIds, similarCheckedAtMs = prior?.similarCheckedAtMs)
             }
-            entries[e.artistId] = e
+            // Featured appearances are not this artist's releases.
+            val own = ReleaseFeedDedupe.ownReleases(fetched.filter { it.releaseId != null }, meta.artistName)
+            entries[id] = ReleaseFeedCache.normalize(listOf(meta) + own, now)
         }
         // ONLY this batch's ids: walking the whole due set would let the first batch to return stamp the
         // clocks of artists belonging to batches still in flight (which may then fail).
         for (id in outcome.ids) {
-            if (id in returned) continue
+            if (id in byArtist) continue
             val existing = entries[id]
-            entries[id] = existing?.copy(checkedAtMs = now)
-                ?: ArtistReleaseEntry(artistId = id, artistName = fallbackNames[id].orEmpty(), checkedAtMs = now)
+            entries[id] = existing?.map { it.copy(checkedAtMs = now) }
+                ?: listOf(ArtistReleaseEntry(artistId = id, artistName = fallbackNames[id].orEmpty(), checkedAtMs = now))
         }
         bump()
     }
@@ -413,11 +455,15 @@ class ReleaseFeedService(
     private fun load() {
         val f = file ?: return
         val doc = runCatching { ReleaseFeedDocumentCodec.decode(f.readText()) }.getOrNull() ?: return
-        for (e in doc.entries) entries.putIfAbsent(e.artistId, e)
+        // v1 (one row per artist) is a valid v2 file: grouping is all the migration there is. No fetch, TTL
+        // clocks kept - each artist gains its full list on its next normal check.
+        val now = clock()
+        for ((id, rows) in ReleaseFeedCache.group(doc.entries)) entries[id] = ReleaseFeedCache.normalize(rows, now)
         seededAtMs = doc.seededAtMs
     }
 
-    private fun snapshotLocked() = ReleaseFeedDocument(entries.values.toList(), seededAtMs)
+    /** One row per release, grouped by artist, head first. */
+    private fun snapshotLocked() = ReleaseFeedDocument(entries.keys.sorted().flatMap { entries[it].orEmpty() }, seededAtMs)
 
     private val writeLock = Any()
 
@@ -444,7 +490,8 @@ class ReleaseFeedService(
 
     fun seedForTesting(list: List<ArtistReleaseEntry>) = synchronized(lock) {
         entries.clear()
-        for (e in list) entries.putIfAbsent(e.artistId, e)
+        // Groups (newest first) so a test or fixture can seed several releases for one artist.
+        for ((id, rows) in ReleaseFeedCache.group(list)) entries[id] = rows.sortedByDescending { it.releaseAtMs ?: Double.NEGATIVE_INFINITY }
         bump()
     }
 
@@ -454,9 +501,20 @@ class ReleaseFeedService(
         const val DRAIN_DEBOUNCE_SECONDS = 2.0
         private const val MAX_ATTEMPTS = 5
 
-        /** The one request shape. Commas stay literal (iOS URLQueryItem leaves them). */
+        /** Releases asked for per artist in the batch (measured: keeps a 50-artist batch ~0.6 MB). */
+        const val ALBUMS_PER_ARTIST = 25
+        private const val ALBUM_FIELDS = "name,releaseDate,artwork,trackCount,contentRating,isSingle,isCompilation,artistName"
+
+        /** The one batch request shape. Commas stay literal; brackets are percent-encoded (both work, measured). */
         fun requestUrl(ids: List<Int>, base: String = "https://api.music.apple.com"): String =
-            "$base/v1/catalog/us/artists?ids=${ids.joinToString(",")}&views=latest-release,similar-artists"
+            "$base/v1/catalog/us/artists?ids=${ids.joinToString(",")}&include=albums" +
+                "&limit%5Balbums%5D=$ALBUMS_PER_ARTIST&sort%5Balbums%5D=-releaseDate" +
+                "&fields%5Bartists%5D=name&fields%5Balbums%5D=$ALBUM_FIELDS"
+
+        /** The overflow follow-up. Built, never followed: Apple's `next` drops `sort` and `fields`. */
+        fun overflowUrl(artistId: Int, base: String = "https://api.music.apple.com"): String =
+            "$base/v1/catalog/us/artists/$artistId/albums?sort=-releaseDate&offset=$ALBUMS_PER_ARTIST&limit=100" +
+                "&fields%5Balbums%5D=$ALBUM_FIELDS"
 
 
         /** Debug/UI-test canned rows: two out-now releases and one pre-order. */

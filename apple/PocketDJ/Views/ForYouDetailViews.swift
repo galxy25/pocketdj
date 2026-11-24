@@ -92,8 +92,7 @@ struct NewReleasesView: View {
                 section(ReleaseStatus.outNow, outNowA, preAdded: preAdded)
                 section(ReleaseStatus.comingSoon, soonA, preAdded: preAdded)
                 if let hiddenNote {
-                    hiddenFooter(note: hiddenNote, count: hiddenAlbums + hiddenSingles,
-                                 caveat: NewReleaseKinds.footerCaveat(mode: mode, hiddenSingles: hiddenSingles))
+                    hiddenFooter(note: hiddenNote, count: hiddenAlbums + hiddenSingles)
                 }
             }
         }
@@ -201,16 +200,12 @@ struct NewReleasesView: View {
 
     /// "3 singles hidden · Show all" — so the filter can never hide things silently. The value is
     /// the hidden count; it counts rows that WOULD render under Everything (👎'd ones included).
-    private func hiddenFooter(note: String, count: Int, caveat: String? = nil) -> some View {
+    private func hiddenFooter(note: String, count: Int) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(note).font(.caption).foregroundStyle(Theme.fgDim)
                     .accessibilityIdentifier("new-kind-hidden-footer")
                     .accessibilityValue("\(count)")
-                if let caveat {
-                    Text(caveat).font(.caption2).foregroundStyle(Theme.fgDim)
-                        .accessibilityIdentifier("new-kind-hidden-caveat")
-                }
             }
             Spacer()
             Button("Show all") { showAll() }
@@ -475,7 +470,7 @@ struct NewReleasesView: View {
         HStack(spacing: 8) {
             Button { push(item.entry) } label: { row(item) }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("new-release-\(item.entry.artistId)")
+                .accessibilityIdentifier("new-release-\(item.entry.releaseId ?? "artist-\(item.entry.artistId)")")
             if let id = item.entry.releaseId, preAdded.contains(id) {
                 Text("Pre-added ✓").font(.caption2.weight(.semibold))
                     .foregroundStyle(Theme.accent2)
@@ -523,7 +518,7 @@ struct NewReleasesView: View {
                     let cls = e.kindClass
                     Text(NewReleaseKinds.badge(kind: e.releaseKind, cls: cls))
                         .font(.caption2).foregroundStyle(Theme.accent)
-                        .accessibilityIdentifier("new-release-kind-\(e.artistId)")
+                        .accessibilityIdentifier("new-release-kind-\(e.releaseId ?? "artist-\(e.artistId)")")
                         .accessibilityValue(cls.rawValue)
                     if let at = e.releaseAtMs {
                         Text(Self.relative(at)).font(.caption2).foregroundStyle(Theme.fgDim)

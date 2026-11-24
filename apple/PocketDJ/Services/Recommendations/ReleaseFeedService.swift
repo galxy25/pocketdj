@@ -12,11 +12,19 @@ import MusicKit
 /// The catalog index has ZERO rows carrying a release date — only a coarse `year`. There is no
 /// local answer to "did this artist put something out this month", so the feed has to ask Apple.
 ///
-/// ── ONE ENDPOINT, ONE REQUEST SHAPE ──────────────────────────────────────────────────────────
-///     GET /v1/catalog/us/artists?ids=<=50&views=latest-release,similar-artists
-/// Both views ride the SAME request, so similarity costs nothing extra. 50 ids is a hard cap
-/// (100 returns HTTP 400, measured). Concurrency is pinned at 2 with backoff because the edge
-/// limiter is bursty — 40 parallel requests returned 24x HTTP 429.
+/// ── ONE BATCH ENDPOINT, EVERY RELEASE ────────────────────────────────────────────────────────
+///     GET /v1/catalog/us/artists?ids=<=50&include=albums&limit[albums]=25
+///         &sort[albums]=-releaseDate&fields[artists]=name&fields[albums]=…
+/// Each artist's release list comes back newest first, so the feed keeps EVERY release inside the
+/// window (an album followed by a newer single no longer loses the album). Measured 2026-11-23 on
+/// 50-artist batches: ~0.6 MB / 0.8–0.9 s, against 1.1–1.2 MB / 1.4–1.9 s for the old
+/// `views=latest-release,similar-artists`. Similar artists LEFT this request: adding the albums
+/// list to it produced HTTP 504s on 1–4 of 8 batches, and nothing in production reads them (the
+/// cached values are carried forward). 50 ids is a hard cap (100 returns HTTP 400, measured).
+/// A saturated artist (25 in-window rows plus a `next`) gets one `/artists/{id}/albums` follow-up
+/// inside the same task, so the in-flight cap stays 2. Concurrency is pinned at 2 with backoff
+/// because the edge limiter is bursty — 40 parallel requests returned 24x HTTP 429.
+/// Design: docs/design/new-feed-all-releases.md.
 ///
 /// ── AUTHENTICATION: NO NEW CREDENTIAL ────────────────────────────────────────────────────────
 /// `MusicDataRequest` takes an arbitrary `URLRequest` and attaches BOTH the developer token and
@@ -99,7 +107,10 @@ struct ReleaseIdentity: Equatable, Sendable {
 struct ReleaseFeedItem: Identifiable, Equatable {
     let entry: ArtistReleaseEntry
     let status: ReleaseStatus
-    var id: Int { entry.artistId }
+    /// Store ids of the editions / clean-explicit twins folded into this row (never shown).
+    var alternateReleaseIds: [String] = []
+    /// One row per release — unique across the feed (`ReleaseFeedDedupe.acrossArtists`).
+    var id: String { feedbackId }
 
     /// The id a 👍/👎 on this row is filed under.
     ///
@@ -121,14 +132,16 @@ final class ReleaseFeedService {
     typealias Transport = ReleaseFeedTransport
 
     struct Document: Codable {
-        var schemaVersion = 1
+        /// 2 = one row per RELEASE, grouped by artist, head first. A v1 file (one row per artist)
+        /// is a valid v2 file; old builds keep the first row per artist, which is the head.
+        var schemaVersion = 2
         var entries: [ArtistReleaseEntry] = []
         /// When the ONE-SHOT listening seed ran. ADDITIVE-OPTIONAL: a document written before the
         /// seed existed decodes to nil and is treated as "never seeded", which is exactly right —
         /// that is the install the owner reported as "my new tile is still empty".
         var seededAtMs: Double?
 
-        init(schemaVersion: Int = 1, entries: [ArtistReleaseEntry] = [], seededAtMs: Double? = nil) {
+        init(schemaVersion: Int = 2, entries: [ArtistReleaseEntry] = [], seededAtMs: Double? = nil) {
             self.schemaVersion = schemaVersion; self.entries = entries; self.seededAtMs = seededAtMs
         }
 
@@ -142,8 +155,9 @@ final class ReleaseFeedService {
         }
     }
 
-    /// artistId → cached answer.
-    private(set) var entries: [Int: ArtistReleaseEntry] = [:]
+    /// artistId → that artist's cached releases, NEWEST FIRST. `rows[0]` is the head and answers
+    /// every artist-level read (TTL clock, name, similar). A bare row means "checked, nothing".
+    private(set) var entries: [Int: [ArtistReleaseEntry]] = [:]
     private(set) var isFetching = false
     private(set) var lastError: String?
     /// Bumped on every cache mutation so views can memo off it instead of the dictionary.
@@ -185,6 +199,13 @@ final class ReleaseFeedService {
     /// Unset ⇒ nothing is version-suppressed, the same honest default `ownsRelease` takes.
     @ObservationIgnored var ownsReleaseVersion: ((Int, String, String) -> Bool)?
 
+    /// Does he already have a 👍/👎 on this feedback id (`rel:<id>`) in the New scope? Used only to
+    /// pick which twin of a clean/explicit pair represents the record, so a verdict given to one
+    /// keeps applying. Unset ⇒ no verdicts.
+    @ObservationIgnored var hasVerdict: ((String) -> Bool)?
+    /// `SettingsStore.preferExplicitVersions`. Unset ⇒ clean.
+    @ObservationIgnored var prefersExplicit: (() -> Bool)?
+
     /// Scales EVERY wall-clock wait in this service — the burst-coalescing debounce and each
     /// backoff sleep. 1 in production; tests set it near zero so a full retry sequence (and the
     /// drain scheduling that rides on it) runs in milliseconds instead of the ~30 s the real
@@ -214,31 +235,47 @@ final class ReleaseFeedService {
     /// on read means an album he adds today drops out of the feed immediately, with no refetch
     /// and no cache invalidation. It also means the exclusion cannot go stale in a stored record.
     func feed(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ReleaseFeedItem] {
-        entries.values
-            .compactMap { e -> ReleaseFeedItem? in
-                guard let at = e.releaseAtMs,
-                      let status = ReleaseFeedPolicy.classify(releaseAtMs: at, nowMs: nowMs)
-                else { return nil }
-                // A release with no store id cannot be matched against the catalog OR opened,
-                // so it is not offered — there is nothing the owner could do with the row.
-                guard let releaseId = e.releaseId else { return nil }
-                // OWNERSHIP, on every identity the release carries — the store id he may never
+        // Flatten → window → one row per release id → collapse editions/twins → ownership per
+        // group → sort.
+        // A release with no store id cannot be matched against the catalog OR opened, so it is
+        // not offered — there is nothing the owner could do with the row.
+        let inWindow = entries.values.flatMap { $0 }.filter { e in
+            guard let at = e.releaseAtMs, e.releaseId != nil else { return false }
+            return ReleaseFeedPolicy.classify(releaseAtMs: at, nowMs: nowMs) != nil
+        }
+        let unique = ReleaseFeedDedupe.acrossArtists(inWindow)
+        let groups = ReleaseFeedDedupe.collapse(unique, hasVerdict: hasVerdict,
+                                                prefersExplicit: prefersExplicit)
+        return groups
+            .compactMap { g -> ReleaseFeedItem? in
+                // OWNERSHIP, on every identity each member carries — the store id he may never
                 // have claimed, plus the artist + title the record is known by when he has it
                 // under a different id, under no id, or only in the live Apple Music library.
+                // Owning ANY twin / edition is owning the record, so the whole group drops.
                 // BOTH sections read this: a pre-order he added crosses from Coming Soon into Out
                 // Now on its release date and must stay filtered on both sides of that line.
-                let identity = ReleaseIdentity(storeId: releaseId, artistId: e.artistId,
-                                               artistName: e.artistName, title: e.releaseName)
-                guard !(ownsRelease?(identity) ?? false) else { return nil }
-                // …and not a DIFFERENT VERSION of something he has (feature 6): the Deluxe /
-                // Expanded / Bonus Track reissue, or a single that is a remix or extended cut of a
-                // song already in the library. Same read-time placement and for the same reason —
-                // an add made today drops the row on the next glance, with no refetch.
-                if let name = e.releaseName,
-                   ownsReleaseVersion?(e.artistId, e.artistName, name) == true { return nil }
-                return ReleaseFeedItem(entry: e, status: status)
+                for e in g.members {
+                    guard let releaseId = e.releaseId else { continue }
+                    let identity = ReleaseIdentity(storeId: releaseId, artistId: e.artistId,
+                                                   artistName: e.artistName, title: e.releaseName)
+                    if ownsRelease?(identity) ?? false { return nil }
+                    // …and not a DIFFERENT VERSION of something he has (feature 6): the Deluxe /
+                    // Expanded / Bonus Track reissue, or a single that is a remix or extended cut
+                    // of a song already in the library. Same read-time placement and for the same
+                    // reason — an add made today drops the row on the next glance.
+                    if let name = e.releaseName,
+                       ownsReleaseVersion?(e.artistId, e.artistName, name) == true { return nil }
+                }
+                guard let at = g.rep.releaseAtMs,
+                      let status = ReleaseFeedPolicy.classify(releaseAtMs: at, nowMs: nowMs)
+                else { return nil }
+                return ReleaseFeedItem(entry: g.rep, status: status,
+                                       alternateReleaseIds: g.alternates.compactMap(\.releaseId))
             }
-            .sorted { ($0.entry.releaseAtMs ?? 0) > ($1.entry.releaseAtMs ?? 0) }
+            .sorted {
+                let (a, b) = ($0.entry.releaseAtMs ?? 0, $1.entry.releaseAtMs ?? 0)
+                return a != b ? a > b : $0.id < $1.id
+            }
     }
 
     /// Already out, within the window — newest first.
@@ -265,7 +302,7 @@ final class ReleaseFeedService {
         var out: [Int] = []
         var seen = Set(artistIds)
         for id in artistIds {
-            for s in entries[id]?.similarArtistIds ?? [] where seen.insert(s).inserted {
+            for s in entries[id]?.first?.similarArtistIds ?? [] where seen.insert(s).inserted {
                 out.append(s)
             }
         }
@@ -377,7 +414,7 @@ final class ReleaseFeedService {
     /// makes repeated taps free.
     func recheckKnownArtists() {
         guard canRecheck else { return }
-        for (id, e) in entries { pending[id] = e.artistName }
+        for (id, rows) in entries { pending[id] = rows.first?.artistName ?? "" }
         guard !pending.isEmpty else { return }
         revision &+= 1
         scheduleDrain()
@@ -389,7 +426,7 @@ final class ReleaseFeedService {
                           nowMs: Double = Date().timeIntervalSince1970 * 1000) {
         guard canSync else { return }
         let plays = playsForArtist?(artistId) ?? 0
-        if ReleaseFeedPolicy.isDue(lastCheckedAtMs: entries[artistId]?.checkedAtMs,
+        if ReleaseFeedPolicy.isDue(lastCheckedAtMs: entries[artistId]?.first?.checkedAtMs,
                                    plays: plays, nowMs: nowMs) {
             pending[artistId] = name
         }
@@ -500,38 +537,49 @@ final class ReleaseFeedService {
         let succeeded: Bool
     }
 
-    /// One batch, with backoff. `nonisolated` + static so the request itself runs off the main
-    /// actor — this is network I/O and must never block a frame.
-    private nonisolated static func fetchBatch(_ ids: [Int], transport: Transport,
-                                               timeScale: Double) async -> BatchOutcome {
-        func failed() -> BatchOutcome { BatchOutcome(ids: ids, entries: [], succeeded: false) }
-        guard !ids.isEmpty else { return BatchOutcome(ids: ids, entries: [], succeeded: true) }
-        var comps = URLComponents(string: "https://api.music.apple.com/v1/catalog/us/artists")!
-        comps.queryItems = [
-            URLQueryItem(name: "ids", value: ids.map(String.init).joined(separator: ",")),
-            URLQueryItem(name: "views", value: "latest-release,similar-artists"),
-        ]
-        guard let url = comps.url else { return failed() }
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
+    /// The albums fields the feed reads — shared by the batch request and the overflow page.
+    private nonisolated static let albumFields =
+        "name,releaseDate,artwork,trackCount,contentRating,isSingle,isCompilation,artistName"
+    /// Releases asked for per artist in the batch. Measured: 25 keeps a 50-artist batch ~0.6 MB;
+    /// the most any artist had inside the window in a 400-artist sample was 9.
+    nonisolated static let albumsPerArtist = 25
 
+    /// The batch URL. Brackets are percent-encoded (measured: both forms work; encoded is the
+    /// unambiguous one).
+    nonisolated static func batchURL(_ ids: [Int]) -> URL? {
+        var comps = URLComponents(string: "https://api.music.apple.com/v1/catalog/us/artists")!
+        comps.percentEncodedQuery = [
+            "ids=" + ids.map(String.init).joined(separator: ","),
+            "include=albums",
+            "limit%5Balbums%5D=\(albumsPerArtist)",
+            "sort%5Balbums%5D=-releaseDate",
+            "fields%5Bartists%5D=name",
+            "fields%5Balbums%5D=" + albumFields,
+        ].joined(separator: "&")
+        return comps.url
+    }
+
+    /// The overflow follow-up. Built, never followed: Apple's `next` drops `sort` and `fields`.
+    nonisolated static func overflowURL(artistId: Int) -> URL? {
+        var comps = URLComponents(string: "https://api.music.apple.com/v1/catalog/us/artists/\(artistId)/albums")!
+        comps.percentEncodedQuery = [
+            "sort=-releaseDate", "offset=\(albumsPerArtist)", "limit=100",
+            "fields%5Balbums%5D=" + albumFields,
+        ].joined(separator: "&")
+        return comps.url
+    }
+
+    /// One request with exponential, jittered backoff on retryable failures. nil = gave up.
+    private nonisolated static func fetchWithBackoff(_ req: URLRequest, transport: Transport,
+                                                     timeScale: Double) async -> Data? {
         let maxAttempts = 5
         for attempt in 0..<maxAttempts {
             do {
-                let data = try await transport.fetch(req)
-                let decoded = try JSONDecoder().decode(ArtistsCatalogResponse.self, from: data)
-                // EVERY field of the wire model is optional, so an error envelope — or any body
-                // that simply isn't this endpoint's — decodes "successfully" into `data == nil`.
-                // Treating that as a good answer is the cache-poisoning path: it would stamp
-                // fifty artists' TTL clocks off a response that contained no artists at all.
-                guard decoded.data != nil else { return failed() }
-                return BatchOutcome(ids: ids,
-                                    entries: decoded.entries(checkedAtMs: Date().timeIntervalSince1970 * 1000),
-                                    succeeded: true)
+                return try await transport.fetch(req)
             } catch {
                 let retryable = (error as? ReleaseFeedTransportError)?.isRetryable
                     ?? (error is URLError)   // offline / timeout: transient by nature
-                guard retryable, attempt < maxAttempts - 1 else { return failed() }
+                guard retryable, attempt < maxAttempts - 1 else { return nil }
                 // Exponential, plus jitter: the two in-flight batches hit the same limiter, so
                 // an unjittered schedule would put them to sleep and wake them in lockstep —
                 // reproducing the burst that caused the 429 in the first place.
@@ -540,7 +588,45 @@ final class ReleaseFeedService {
                 try? await Task.sleep(nanoseconds: UInt64(max(0, wait) * 1_000_000_000))
             }
         }
-        return failed()
+        return nil
+    }
+
+    /// One batch, with backoff. `nonisolated` + static so the request itself runs off the main
+    /// actor — this is network I/O and must never block a frame.
+    private nonisolated static func fetchBatch(_ ids: [Int], transport: Transport,
+                                               timeScale: Double) async -> BatchOutcome {
+        func failed() -> BatchOutcome { BatchOutcome(ids: ids, entries: [], succeeded: false) }
+        guard !ids.isEmpty else { return BatchOutcome(ids: ids, entries: [], succeeded: true) }
+        guard let url = batchURL(ids) else { return failed() }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+
+        guard let data = await fetchWithBackoff(req, transport: transport, timeScale: timeScale),
+              let decoded = try? JSONDecoder().decode(ArtistsCatalogResponse.self, from: data),
+              // EVERY field of the wire model is optional, so an error envelope — or any body
+              // that simply isn't this endpoint's — decodes "successfully" into `data == nil`.
+              // Treating that as a good answer is the cache-poisoning path: it would stamp
+              // fifty artists' TTL clocks off a response that contained no artists at all.
+              decoded.data != nil else { return failed() }
+        let now = Date().timeIntervalSince1970 * 1000
+        var rows = decoded.entries(checkedAtMs: now)
+
+        // OVERFLOW: an artist that filled all 25 slots with in-window releases and has more. Run
+        // sequentially INSIDE this batch's task, so the in-flight total never exceeds the 2-permit
+        // cap. A failed follow-up keeps the 25 — losing release 26+ for one check beats
+        // re-queuing fifty artists.
+        for artistId in decoded.saturatedArtistIds(limit: albumsPerArtist, nowMs: now) {
+            guard let url = overflowURL(artistId: artistId) else { continue }
+            var r = URLRequest(url: url); r.httpMethod = "GET"
+            guard let page = await fetchWithBackoff(r, transport: transport, timeScale: timeScale),
+                  let more = (try? JSONDecoder().decode(ArtistAlbumsPage.self, from: page))?.data
+            else { continue }
+            let name = rows.first(where: { $0.artistId == artistId })?.artistName ?? ""
+            rows += more.map {
+                ArtistsCatalogResponse.row($0, artistId: artistId, artistName: name, checkedAtMs: now)
+            }
+        }
+        return BatchOutcome(ids: ids, entries: rows, succeeded: true)
     }
 
     /// Merge one batch into the cache.
@@ -554,7 +640,7 @@ final class ReleaseFeedService {
     /// anywhere and nothing to retry against.
     private func apply(_ outcome: BatchOutcome, fallbackNames: [Int: String]) {
         guard outcome.succeeded else {
-            for id in outcome.ids { pending[id] = fallbackNames[id] ?? entries[id]?.artistName ?? "" }
+            for id in outcome.ids { pending[id] = fallbackNames[id] ?? entries[id]?.first?.artistName ?? "" }
             // Deliberately does NOT reschedule a drain. Re-arming here would spin against an
             // outage; the queue instead rides the next play event, which is the same lazy
             // trigger the whole feature runs on.
@@ -563,30 +649,33 @@ final class ReleaseFeedService {
         }
         lastError = nil
         let now = Date().timeIntervalSince1970 * 1000
-        var returned = Set<Int>()
-        for var e in outcome.entries {
-            returned.insert(e.artistId)
-            if e.artistName.isEmpty { e.artistName = fallbackNames[e.artistId] ?? "" }
+        let byArtist = ReleaseFeedCache.group(outcome.entries)
+        for (id, fetched) in byArtist {
+            // The fetched list is AUTHORITATIVE: a withdrawn or re-id'd pre-order disappears.
+            var meta = fetched[0]
+            if meta.artistName.isEmpty { meta.artistName = fallbackNames[id] ?? entries[id]?.first?.artistName ?? "" }
             // Carry a previously-known similar list forward when this response had none, so a
-            // sparse answer never erases good data.
-            if e.similarArtistIds == nil {
-                e.similarArtistIds = entries[e.artistId]?.similarArtistIds
-                e.similarCheckedAtMs = entries[e.artistId]?.similarCheckedAtMs
+            // sparse answer never erases good data (this request no longer asks for similar).
+            if meta.similarArtistIds == nil {
+                meta.similarArtistIds = entries[id]?.first?.similarArtistIds
+                meta.similarCheckedAtMs = entries[id]?.first?.similarCheckedAtMs
             }
-            entries[e.artistId] = e
+            // Featured appearances are not this artist's releases.
+            let own = ReleaseFeedDedupe.ownReleases(fetched.filter { $0.releaseId != nil },
+                                                    artistName: meta.artistName)
+            entries[id] = ReleaseFeedCache.normalize(rows: [meta] + own, nowMs: now)
         }
         // ONLY this batch's ids. Walking the whole due set here would let the first batch to
         // return stamp the clocks of artists belonging to batches still in flight — and if one of
         // those then failed, its artists would already be marked "checked" by a request that
         // never asked about them.
-        for id in outcome.ids where !returned.contains(id) {
-            if var existing = entries[id] {
-                existing.checkedAtMs = now
-                entries[id] = existing
+        for id in outcome.ids where byArtist[id] == nil {
+            if let existing = entries[id] {
+                entries[id] = existing.map { var r = $0; r.checkedAtMs = now; return r }
             } else {
-                entries[id] = ArtistReleaseEntry(artistId: id,
-                                                 artistName: fallbackNames[id] ?? "",
-                                                 checkedAtMs: now)
+                entries[id] = [ArtistReleaseEntry(artistId: id,
+                                                  artistName: fallbackNames[id] ?? "",
+                                                  checkedAtMs: now)]
             }
         }
         revision &+= 1
@@ -623,12 +712,19 @@ final class ReleaseFeedService {
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
-        entries = Dictionary(doc.entries.map { ($0.artistId, $0) }, uniquingKeysWith: { a, _ in a })
+        // v1 (one row per artist) is a valid v2 file: grouping is all the migration there is.
+        // No fetch, TTL clocks kept — each artist gains its full list on its next normal check.
+        let now = Date().timeIntervalSince1970 * 1000
+        entries = ReleaseFeedCache.group(doc.entries).mapValues {
+            ReleaseFeedCache.normalize(rows: $0, nowMs: now)
+        }
         seededAtMs = doc.seededAtMs
     }
 
     private func save() {
-        let doc = Document(entries: Array(entries.values), seededAtMs: seededAtMs)
+        // One row per release, grouped by artist, head first.
+        let doc = Document(entries: entries.keys.sorted().flatMap { entries[$0] ?? [] },
+                           seededAtMs: seededAtMs)
         guard let data = try? JSONEncoder().encode(doc) else { return }
         let tmp = fileURL.appendingPathExtension("tmp")
         do {
@@ -641,7 +737,13 @@ final class ReleaseFeedService {
     func resetPendingForTesting() { pending = [:]; drainTask?.cancel(); drainTask = nil }
     /// Test seam: seed the cache directly.
     func seedForTesting(_ list: [ArtistReleaseEntry]) {
-        entries = Dictionary(list.map { ($0.artistId, $0) }, uniquingKeysWith: { a, _ in a })
+        // Groups (newest first), so a test or fixture can seed several releases for one artist.
+        entries = ReleaseFeedCache.group(list).mapValues { rows in
+            rows.enumerated().sorted {
+                let (a, b) = ($0.element.releaseAtMs ?? -.infinity, $1.element.releaseAtMs ?? -.infinity)
+                return a != b ? a > b : $0.offset < $1.offset
+            }.map(\.element)
+        }
         revision &+= 1
     }
     /// Test seam: how many artists are waiting on a batch.
@@ -691,6 +793,20 @@ final class ReleaseFeedService {
                                releaseName: "Midnight Edit", releaseAtMs: nowMs - 3 * day,
                                releaseArtworkUrl: nil, releaseKind: nil, trackCount: 1),
         ]
+    }
+
+    /// `PDJ_NEW_FIXTURE_MULTI=1`: a second, NEWER release for 900_001 — the "album then a newer
+    /// single" story the Albums-only filter must not lose.
+    nonisolated static var wantsUIMultiFixture: Bool {
+        wantsUIFixture && ProcessInfo.processInfo.environment["PDJ_NEW_FIXTURE_MULTI"] == "1"
+    }
+
+    nonisolated static func uiFixtureMultiEntries(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ArtistReleaseEntry] {
+        [ArtistReleaseEntry(artistId: 900_001, artistName: "The Test Pressing",
+                            checkedAtMs: nowMs, releaseId: "9000000007",
+                            releaseName: "Second Side (Edit) - Single",
+                            releaseAtMs: nowMs - 0.5 * 86_400_000,
+                            releaseArtworkUrl: nil, releaseKind: "single", trackCount: 1)]
     }
 
     /// The transport the feed reads Apple Music through — also what hydrates liked-release

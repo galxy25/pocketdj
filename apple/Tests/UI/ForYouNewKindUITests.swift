@@ -8,13 +8,14 @@ import XCTest
 final class ForYouNewKindUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
 
-    private func launch(kind: String? = nil, kindsFixture: Bool = false) -> XCUIApplication {
+    private func launch(kind: String? = nil, kindsFixture: Bool = false, multiFixture: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
         app.launchEnvironment["PDJ_REC_FIXTURE"] = "1"
         app.launchEnvironment["PDJ_START_SECTION"] = "History"
         if let kind { app.launchEnvironment["PDJ_NEW_KIND"] = kind }
         if kindsFixture { app.launchEnvironment["PDJ_NEW_FIXTURE_KINDS"] = "1" }
+        if multiFixture { app.launchEnvironment["PDJ_NEW_FIXTURE_MULTI"] = "1" }
         app.launch()
         let tab = app.el("history-tab-for-you")
         XCTAssertTrue(tab.waitForExistence(timeout: 20))
@@ -29,7 +30,13 @@ final class ForYouNewKindUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["New"].waitForExistence(timeout: 10))
     }
 
-    private func row(_ app: XCUIApplication, _ artistId: Int) -> XCUIElement { app.el("new-release-\(artistId)") }
+    /// Rows are keyed by RELEASE id. The fixture's artist 900_00N ships release 900000000N.
+    private func row(_ app: XCUIApplication, _ artistId: Int) -> XCUIElement {
+        app.el("new-release-\(artistId - 900_000 + 9_000_000_000)")
+    }
+    private func release(_ app: XCUIApplication, _ releaseId: String) -> XCUIElement {
+        app.el("new-release-\(releaseId)")
+    }
     private func gone(_ e: XCUIElement, _ msg: String) {
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: e)
         waitForExpectations(timeout: 10)
@@ -70,6 +77,24 @@ final class ForYouNewKindUITests: XCTestCase {
         showAll.tap()
         XCTAssertTrue(row(app, 900_002).waitForExistence(timeout: 5), "Show all brings the single back")
         gone(app.any("new-kind-hidden-footer"), "footer gone")
+    }
+
+    /// The bug this round fixes: an album followed by a NEWER single from the same artist. Under
+    /// "Albums only" the album must still be there (the feed used to keep one release per artist).
+    @MainActor
+    func testAlbumsOnlyKeepsAnAlbumBehindANewerSingle() {
+        let app = launch(multiFixture: true)
+        openNew(app)
+        let single = release(app, "9000000007"), album = release(app, "9000000001")
+        XCTAssertTrue(single.waitForExistence(timeout: 10))
+        XCTAssertTrue(album.exists)
+        XCTAssertLessThan(single.frame.minY, album.frame.minY, "newer single sits above its album")
+
+        pick(app, "albums")
+        XCTAssertTrue(album.waitForExistence(timeout: 5), "the album survives a newer single")
+        gone(single, "the single is hidden")
+        XCTAssertEqual(app.any("new-kind-hidden-footer").value as? String, "2", "900002 + the new single")
+        XCTAssertFalse(app.any("new-kind-hidden-caveat").exists, "the caveat is gone")
     }
 
     /// US2 — only singles; and an honest empty state when none are left.

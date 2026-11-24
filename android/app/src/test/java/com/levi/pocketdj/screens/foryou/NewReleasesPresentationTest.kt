@@ -26,13 +26,13 @@ class NewReleasesPresentationTest {
 
     @Test fun thumbedUpReleasesLeaveEntirely() {
         val out = NewReleasesPresentation.offered(items, mapOf("rel:r2" to 1.0))
-        assertEquals(listOf(1, 3, 4), out.map { it.id })
+        assertEquals(listOf("rel:r1", "rel:r3", "rel:r4"), out.map { it.id })
         assertEquals(items, NewReleasesPresentation.offered(items, emptyMap()))
     }
 
     @Test fun thumbedDownReleasesSinkButStayRenderable() {
         val sunk = mapOf("rel:r1" to 1.0, "rel:r3" to 1.0)
-        assertEquals(listOf(2, 4, 1, 3), NewReleasesPresentation.sunkLast(items, sunk).map { it.id })
+        assertEquals(listOf("rel:r2", "rel:r4", "rel:r1", "rel:r3"), NewReleasesPresentation.sunkLast(items, sunk).map { it.id })
         assertEquals(items, NewReleasesPresentation.sunkLast(items, emptyMap()))
     }
 

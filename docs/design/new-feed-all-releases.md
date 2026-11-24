@@ -1,6 +1,6 @@
 # For You ▸ New: keep every release in the window
 
-**Status:** designed (fix/new-feed-all-releases), not implemented
+**Status:** implemented (fix/new-feed-all-releases)
 **Follows:** `docs/design/foryou-new-kind-filter.md` §9 ("One release per artist"), merged in c61d7e1c.
 **Goal:** the feed holds every release each artist has inside the window (out now, the last 30
 days, plus everything coming soon), so the albums/singles filter never loses a record. Then the

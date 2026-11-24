@@ -85,7 +85,7 @@ The menu label says "Albums only", and the menu footnote says "EPs count as albu
 The row badge today shows the raw `releaseKind.capitalized`. It changes to the **classified**
 label (`Album` / `EP` / `Single` / `Compilation`). Otherwise a 2-track "Album" would sit under
 "Singles only" with an "Album" badge, and the filter would look broken. The badge gets the id
-`new-release-kind-<artistId>` with `accessibilityValue` = class raw.
+`new-release-kind-<releaseId>` with `accessibilityValue` = class raw.
 
 ## 3. The one pure function
 
@@ -337,7 +337,7 @@ footer and empty copy. `AppSettingsStore` default "all".
 | `foryou-new-more` (Android) / the toolbar ⋯ from `collectionToolbar(idPrefix: "foryou-new")` (iOS) | opens the menu |
 | `foryou-new-kind-menu` | the "Show" section |
 | `foryou-new-kind-all` · `-albums` · `-singles` · `-albumsFirst` | the four choices (`accessibilityValue` "selected" on the current one) |
-| `new-release-kind-<artistId>` | a row's kind badge (value = class raw) |
+| `new-release-kind-<releaseId>` | a row's kind badge (value = class raw) |
 | `new-release-group-albums-<outNow\|comingSoon>` · `new-release-group-singles-<…>` | `albumsFirst` sub-headers |
 | `new-kind-hidden-footer` | "n … hidden · Show all" (value = hidden count) |
 | `new-kind-show-all` | Show all (footer and filter-empty state) |
@@ -399,13 +399,8 @@ XcodeGen picks up new files: run `xcodegen generate` after adding them.
 
 ## 9. Known limits and follow-ups
 
-- **One release per artist.** The feed caches each artist's *latest* release only (the
-  `latest-release` view). If an artist put out an album and then, a week later, a single, the
-  album is already gone from the cache, and "Albums only" can't show it. US1 is weakest for exactly
-  the artists who keep releasing. Follow-up (its own design, touching `ReleaseFeedService` on both
-  platforms): when a refresh replaces an entry whose previous release is still inside the 30-day
-  window, keep it as `previousReleases` (≤3). It's out of scope here because it changes the feed's
-  storage shape and the Android `ReleaseFeedService.kt` the parity program is near.
+- **One release per artist: fixed.** The feed now keeps every release each artist has inside the
+  window, and the footer caveat is gone. See `docs/design/new-feed-all-releases.md`.
 - The 3-vs-4-track boundary without durations (a 3-track long-form record reads as a single).
   Fetching durations would mean a per-release track expansion, which the feed deliberately never
   does on read.

@@ -154,12 +154,6 @@ enum NewReleaseKinds {
         return parts.joined(separator: ", ") + " hidden"
     }
 
-    /// The Albums-only footer caveat: the feed keeps ONE latest release per artist, so a newer
-    /// single can displace that artist's album. Nil outside `.albums` or when no single is hidden.
-    static func footerCaveat(mode: NewReleaseKindFilter, hiddenSingles: Int) -> String? {
-        mode == .albums && hiddenSingles > 0 ? "A newer single can hide an artist's album." : nil
-    }
-
     /// The word for what a mode is looking at, for "No new albums" / "No new singles".
     static func shownNoun(_ mode: NewReleaseKindFilter) -> String {
         mode == .singles ? "singles" : "albums"

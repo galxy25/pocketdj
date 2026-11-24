@@ -137,6 +137,8 @@ data class ArtistReleaseEntry(
     val explicit: Boolean? = null,
     val similarArtistIds: List<Int>? = null,
     val similarCheckedAtMs: Double? = null,
+    /** Apple's CREDIT for this release ("Future, Drake & Metro Boomin"); null on rows from before the feed kept every release. */
+    val releaseArtistName: String? = null,
 )
 
 /** Every identity one release carries, handed to the ownership filter together. */
@@ -151,8 +153,14 @@ data class ReleaseIdentity(
  * One row of the feed. The status is computed at READ time, never stored: a cached entry silently ages
  * from "coming soon" into "out now" as the calendar moves.
  */
-data class ReleaseFeedItem(val entry: ArtistReleaseEntry, val status: ReleaseStatus) {
-    val id: Int get() = entry.artistId
+data class ReleaseFeedItem(
+    val entry: ArtistReleaseEntry,
+    val status: ReleaseStatus,
+    /** Store ids of the editions / clean-explicit twins folded into this row (never shown). */
+    val alternateReleaseIds: List<String> = emptyList(),
+) {
+    /** One row per release: unique across the feed (see [ReleaseFeedDedupe.acrossArtists]). */
+    val id: String get() = feedbackId
 
     /**
      * The id a thumb on this row is filed under. A release is not a catalog song, so the RELEASE's store
@@ -166,7 +174,8 @@ data class ReleaseFeedItem(val entry: ArtistReleaseEntry, val status: ReleaseSta
 data class ReleaseFeedDocument(
     val entries: List<ArtistReleaseEntry> = emptyList(),
     val seededAtMs: Double? = null,
-    val schemaVersion: Int = 1,
+    /** 2 = one row per RELEASE, grouped by artist, head first. A v1 file (one row per artist) is a valid v2 file. */
+    val schemaVersion: Int = 2,
 )
 
 /** Codec for [ReleaseFeedDocument]: per-entry lenient so one bad row never wipes the cache. */
@@ -201,10 +210,12 @@ object ReleaseFeedDocumentCodec {
 }
 
 /**
- * Wire shape of the ONE endpoint the feed calls:
- * `GET /v1/catalog/us/artists?ids=<=50&views=latest-release,similar-artists`.
- * Parsed loosely on purpose - every nested container is optional, because a sparse artist returns an
- * empty (or absent) view and a strict parse would throw the whole batch away.
+ * Wire shape of the feed's ONE batch request (docs/design/new-feed-all-releases.md):
+ * `GET /v1/catalog/us/artists?ids=<=50&include=albums&limit[albums]=25&sort[albums]=-releaseDate
+ *  &fields[artists]=name&fields[albums]=...`. `relationships.albums` is each artist's release list, newest
+ * first. `views.latest-release` / `views.similar-artists` are still read when present (fixtures, old bodies):
+ * releases are the union, deduped by id. Parsed loosely on purpose - every nested container is optional,
+ * because a sparse artist returns an empty (or absent) `data` and a strict parse would throw the whole batch away.
  */
 object ArtistsCatalogResponse {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -212,41 +223,88 @@ object ArtistsCatalogResponse {
     /**
      * Null when the body is not this endpoint's: an error envelope has no `data`, and treating that as a
      * good answer would stamp fifty artists' TTL clocks off a response that contained no artists.
+     * Returns every release row of every artist (an artist with none is one bare row).
      */
     fun parse(body: String, checkedAtMs: Double): List<ArtistReleaseEntry>? {
         val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return null
         val data = root["data"] as? JsonArray ?: return null
-        return data.mapNotNull { entry(it, checkedAtMs) }
+        return data.flatMap { rows(it, checkedAtMs) }
     }
 
-    private fun entry(row: JsonElement, checkedAtMs: Double): ArtistReleaseEntry? {
-        val o = row as? JsonObject ?: return null
-        val artistId = str(o["id"])?.toIntOrNull() ?: return null
-        val views = o["views"] as? JsonObject
-        val release = ((views?.get("latest-release") as? JsonObject)?.get("data") as? JsonArray)?.firstOrNull() as? JsonObject
-        val attrs = release?.get("attributes") as? JsonObject
+    /**
+     * Artists whose relationship came back FULL ([limit]), whose oldest release is still in the window,
+     * and which have a `next` page: the rare overflow follow-up candidates.
+     */
+    fun saturatedArtistIds(body: String, limit: Int, nowMs: Double): List<Int> {
+        val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return emptyList()
+        val data = root["data"] as? JsonArray ?: return emptyList()
+        return data.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = str(o["id"])?.toIntOrNull() ?: return@mapNotNull null
+            val rel = (o["relationships"] as? JsonObject)?.get("albums") as? JsonObject ?: return@mapNotNull null
+            if (rel["next"] == null) return@mapNotNull null
+            val items = rel["data"] as? JsonArray ?: return@mapNotNull null
+            if (items.size < limit) return@mapNotNull null
+            val oldest = items.mapNotNull {
+                parseReleaseDate(str(((it as? JsonObject)?.get("attributes") as? JsonObject)?.get("releaseDate")))
+            }.minOrNull() ?: return@mapNotNull null
+            if (ReleaseFeedPolicy.isWithinWindow(oldest, nowMs)) id else null
+        }
+    }
+
+    /** One `/artists/{id}/albums` page as rows for [artistId]; null when the body is not a page. */
+    fun parseAlbumsPage(body: String, artistId: Int, artistName: String, checkedAtMs: Double): List<ArtistReleaseEntry>? {
+        val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return null
+        val data = root["data"] as? JsonArray ?: return null
+        return data.mapNotNull { release(it as? JsonObject, artistId, artistName, checkedAtMs) }
+    }
+
+    private fun release(r: JsonObject?, artistId: Int, artistName: String, checkedAtMs: Double): ArtistReleaseEntry? {
+        r ?: return null
+        val id = str(r["id"]) ?: return null
+        val attrs = r["attributes"] as? JsonObject
         val kind = when {
             attrs == null -> null
             bool(attrs["isSingle"]) == true -> "single"
             bool(attrs["isCompilation"]) == true -> "compilation"
             else -> "album"
         }
-        val similar = ((views?.get("similar-artists") as? JsonObject)?.get("data") as? JsonArray).orEmpty()
-            .mapNotNull { str((it as? JsonObject)?.get("id"))?.toIntOrNull() }
         return ArtistReleaseEntry(
             artistId = artistId,
-            artistName = str((o["attributes"] as? JsonObject)?.get("name")).orEmpty(),
+            artistName = artistName,
             checkedAtMs = checkedAtMs,
-            releaseId = str(release?.get("id")),
+            releaseId = id,
             releaseName = str(attrs?.get("name")),
             releaseAtMs = parseReleaseDate(str(attrs?.get("releaseDate"))),
             releaseArtworkUrl = str((attrs?.get("artwork") as? JsonObject)?.get("url")),
             releaseKind = kind,
             trackCount = (attrs?.get("trackCount") as? JsonPrimitive)?.intOrNull,
             explicit = str(attrs?.get("contentRating"))?.let { it == "explicit" },
+            releaseArtistName = str(attrs?.get("artistName")),
+        )
+    }
+
+    private fun rows(row: JsonElement, checkedAtMs: Double): List<ArtistReleaseEntry> {
+        val o = row as? JsonObject ?: return emptyList()
+        val artistId = str(o["id"])?.toIntOrNull() ?: return emptyList()
+        val name = str((o["attributes"] as? JsonObject)?.get("name")).orEmpty()
+        val views = o["views"] as? JsonObject
+        val fromAlbums = (((o["relationships"] as? JsonObject)?.get("albums") as? JsonObject)?.get("data") as? JsonArray).orEmpty()
+        val fromLatest = ((views?.get("latest-release") as? JsonObject)?.get("data") as? JsonArray).orEmpty()
+        val seen = HashSet<String>()
+        val out = ArrayList<ArtistReleaseEntry>()
+        for (r in fromAlbums + fromLatest) {
+            val e = release(r as? JsonObject, artistId, name, checkedAtMs) ?: continue
+            if (seen.add(e.releaseId!!)) out += e
+        }
+        val similar = ((views?.get("similar-artists") as? JsonObject)?.get("data") as? JsonArray).orEmpty()
+            .mapNotNull { str((it as? JsonObject)?.get("id"))?.toIntOrNull() }
+        if (out.isEmpty()) out += ArtistReleaseEntry(artistId = artistId, artistName = name, checkedAtMs = checkedAtMs)
+        out[0] = out[0].copy(
             similarArtistIds = similar.takeIf { it.isNotEmpty() },
             similarCheckedAtMs = if (similar.isEmpty()) null else checkedAtMs,
         )
+        return out
     }
 
     /**
@@ -326,5 +384,152 @@ class ArtistIdResolver(private val source: () -> List<com.levi.pocketdj.data.cat
             m
         }
         return ReleaseFeedWiring.resolveArtistId(name, map)
+    }
+}
+
+/** The cache's invariants for ONE artist's rows, enforced in one place (mirror of iOS `ReleaseFeedCache`). */
+object ReleaseFeedCache {
+    /** Rows beyond the head are kept this far back (the window plus a day of slack). */
+    const val KEEP_DAYS = ReleaseFeedPolicy.WINDOW_DAYS + 1
+    const val MAX_EXTRA_ROWS = 125
+
+    /**
+     * Normalize one artist's rows; `rows[0]` is the SOURCE of the artist-level fields (name, check clock,
+     * similar data), made identical on every row. Newest first (undated last), one row per release id, bare
+     * rows only when there is nothing else, the head always kept, the rest only if future-dated or within
+     * [KEEP_DAYS], capped.
+     */
+    fun normalize(rows: List<ArtistReleaseEntry>, nowMs: Double): List<ArtistReleaseEntry> {
+        val meta = rows.firstOrNull() ?: return emptyList()
+        val seen = HashSet<String>()
+        val real = rows.filter { it.releaseId != null && seen.add(it.releaseId) }
+        fun withMeta(r: ArtistReleaseEntry) = r.copy(
+            artistId = meta.artistId, artistName = meta.artistName, checkedAtMs = meta.checkedAtMs,
+            similarArtistIds = meta.similarArtistIds, similarCheckedAtMs = meta.similarCheckedAtMs,
+        )
+        if (real.isEmpty()) {
+            return listOf(ArtistReleaseEntry(meta.artistId, meta.artistName, meta.checkedAtMs,
+                similarArtistIds = meta.similarArtistIds, similarCheckedAtMs = meta.similarCheckedAtMs))
+        }
+        // sortedByDescending is stable: newest first, undated (-inf) last.
+        val sorted = real.sortedByDescending { it.releaseAtMs ?: Double.NEGATIVE_INFINITY }
+        val cutoff = nowMs - KEEP_DAYS * 86_400_000.0
+        val out = ArrayList<ArtistReleaseEntry>()
+        out += withMeta(sorted[0])
+        for (r in sorted.drop(1)) {
+            val at = r.releaseAtMs ?: continue
+            if (at > nowMs || at >= cutoff) out += withMeta(r)
+            if (out.size >= 1 + MAX_EXTRA_ROWS) break
+        }
+        return out
+    }
+
+    /** Group a flat row list by artist, preserving each artist's row order (a file written head-first keeps its heads). */
+    fun group(rows: List<ArtistReleaseEntry>): LinkedHashMap<Int, List<ArtistReleaseEntry>> {
+        val out = LinkedHashMap<Int, MutableList<ArtistReleaseEntry>>()
+        for (r in rows) out.getOrPut(r.artistId) { ArrayList() }.add(r)
+        return LinkedHashMap<Int, List<ArtistReleaseEntry>>().also { m -> out.forEach { (k, v) -> m[k] = v } }
+    }
+}
+
+/** One displayed record: the representative row and the rows it absorbed. */
+data class ReleaseGroup(val rep: ArtistReleaseEntry, val alternates: List<ArtistReleaseEntry>) {
+    val members: List<ArtistReleaseEntry> get() = listOf(rep) + alternates
+}
+
+/** Pure dedupe rules (mirror of iOS `ReleaseFeedDedupe`); see docs/design/new-feed-all-releases.md section 3. */
+object ReleaseFeedDedupe {
+    private val kindSuffixes = listOf(" - single", " – single", " - ep", " – ep")
+
+    /** Appears-on filter (apply time): keep a release only if the artist is in its credit; no credit fails open. */
+    fun ownReleases(rows: List<ArtistReleaseEntry>, artistName: String): List<ArtistReleaseEntry> {
+        val me = RecVersionIdentity.artistKey(artistName)
+        if (me.isEmpty()) return rows
+        return rows.filter { r ->
+            val credit = r.releaseArtistName?.trim().orEmpty()
+            if (credit.isEmpty()) return@filter true
+            val keys = RecVersionIdentity.creditArtistKeys(credit)
+            keys.isEmpty() || me in keys
+        }
+    }
+
+    /** One row per release id ACROSS artists: the first-credited artist wins, then the lower artist id. */
+    fun acrossArtists(rows: List<ArtistReleaseEntry>): List<ArtistReleaseEntry> {
+        fun position(r: ArtistReleaseEntry): Int {
+            val credit = r.releaseArtistName ?: return Int.MAX_VALUE
+            val i = RecVersionIdentity.creditArtistKeys(credit).indexOf(RecVersionIdentity.artistKey(r.artistName))
+            return if (i < 0) Int.MAX_VALUE else i
+        }
+        val best = LinkedHashMap<String, ArtistReleaseEntry>()
+        for (r in rows) {
+            val id = r.releaseId ?: continue
+            val cur = best[id]
+            if (cur == null) best[id] = r
+            else {
+                val (pa, pb) = position(r) to position(cur)
+                if (pa < pb || (pa == pb && r.artistId < cur.artistId)) best[id] = r
+            }
+        }
+        return best.values.toList()
+    }
+
+    fun stripKindSuffix(name: String): String {
+        val n = name.trim()
+        val lower = n.lowercase()
+        for (suffix in kindSuffixes) if (lower.endsWith(suffix)) return n.dropLast(suffix.length)
+        return n
+    }
+
+    fun baseTitle(name: String): String? = RecVersionIdentity.parse(stripKindSuffix(name)).base.takeIf { it.isNotEmpty() }
+
+    private fun idLess(a: String?, b: String?): Int {
+        val x = a?.toLongOrNull(); val y = b?.toLongOrNull()
+        return if (x != null && y != null) x.compareTo(y) else (a ?: "").compareTo(b ?: "")
+    }
+
+    /**
+     * Collapse editions and clean/explicit twins (read time). Group = (artist, album-or-single bucket, base
+     * title); collapsed only when every member parses STANDARD or COSMETIC. Representative: the member he has
+     * a verdict on, then the explicit preference (unset prefers clean), then newest, then lowest id.
+     */
+    fun collapse(
+        rows: List<ArtistReleaseEntry>,
+        hasVerdict: ((String) -> Boolean)?,
+        prefersExplicit: (() -> Boolean)?,
+        isAlbumBucket: (ArtistReleaseEntry) -> Boolean,
+    ): List<ReleaseGroup> {
+        data class Key(val artist: Int, val albumBucket: Boolean, val base: String)
+        val buckets = LinkedHashMap<Key, MutableList<ArtistReleaseEntry>>()
+        val slots = ArrayList<Any>() // Key (a bucket slot) or ArtistReleaseEntry (un-groupable)
+        for (r in rows) {
+            val base = r.releaseName?.let { baseTitle(it) }
+            if (base == null) { slots += r; continue }
+            val k = Key(r.artistId, isAlbumBucket(r), base)
+            if (k !in buckets) { buckets[k] = ArrayList(); slots += k }
+            buckets[k]!!.add(r)
+        }
+        val preferExplicit = prefersExplicit?.invoke() ?: false
+        val out = ArrayList<ReleaseGroup>()
+        for (slot in slots) {
+            if (slot is ArtistReleaseEntry) { out += ReleaseGroup(slot, emptyList()); continue }
+            val members = buckets[slot as Key]!!
+            val collapsible = members.size > 1 && members.all {
+                val k = RecVersionIdentity.parse(stripKindSuffix(it.releaseName.orEmpty())).klass
+                k == RecVersionIdentity.VersionClass.STANDARD || k == RecVersionIdentity.VersionClass.COSMETIC
+            }
+            if (!collapsible) { members.forEach { out += ReleaseGroup(it, emptyList()) }; continue }
+            fun verdict(r: ArtistReleaseEntry) = r.releaseId?.let { hasVerdict?.invoke("rel:$it") } ?: false
+            val sorted = members.sortedWith { a, b ->
+                val (va, vb) = verdict(a) to verdict(b)
+                if (va != vb) return@sortedWith if (va) -1 else 1
+                val (ea, eb) = (a.explicit == true) to (b.explicit == true)
+                if (ea != eb) return@sortedWith if (ea == preferExplicit) -1 else 1
+                val (ta, tb) = (a.releaseAtMs ?: Double.NEGATIVE_INFINITY) to (b.releaseAtMs ?: Double.NEGATIVE_INFINITY)
+                if (ta != tb) return@sortedWith tb.compareTo(ta)
+                idLess(a.releaseId, b.releaseId)
+            }
+            out += ReleaseGroup(sorted[0], sorted.drop(1))
+        }
+        return out
     }
 }
