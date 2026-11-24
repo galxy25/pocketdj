@@ -258,7 +258,7 @@ class DjSkipMixTest {
         override fun timings() = DjMode.Timings()
         override fun currentInAlbumRun() = false
         override fun nextStartsAlbumRun() = false
-        override fun localSource(item: QueueItem) = DjConductor.LocalSource(File("${item.id}.mp3"))
+        override fun localSource(item: QueueItem): DjConductor.LocalSource? = DjConductor.LocalSource(File("${item.id}.mp3"))
         override fun facts(songId: String): DjConductor.Facts? = null
         override val dspEngaged = true
         override val dspEngagedSongId: String? = "a"
@@ -318,7 +318,7 @@ class DjSkipMixTest {
     }
 
     @Test fun anIncomingThatIsNotLocalFallsBackToTheImmediateAdvance() = runTest {
-        val e = object : Env() { override fun localSource(item: QueueItem) = if (item.id == "b") null else super.localSource(item) }
+        val e = object : Env() { override fun localSource(item: QueueItem): DjConductor.LocalSource? = if (item.id == "b") null else super.localSource(item) }
         val (c, _) = conductor(e)
         assertEquals(DjSkipResult.FALLBACK, c.skip(false))
         assertEquals(0, e.aways)
