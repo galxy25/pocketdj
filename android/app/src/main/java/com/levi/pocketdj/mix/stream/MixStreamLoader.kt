@@ -169,6 +169,26 @@ class MixStreamLoader(
 
     fun removeStemListener(id: String) { stemListeners.remove(id) }
 
+    private val progressListeners = java.util.concurrent.ConcurrentHashMap<String, (String) -> Unit>()
+
+    /** Further SONG-progress listeners besides [onProgress] (e.g. the Now Playing DSP's growing file). Returns a token for [removeProgressListener]. */
+    fun addProgressListener(listener: (String) -> Unit): String {
+        val id = UUID.randomUUID().toString()
+        progressListeners[id] = listener
+        return id
+    }
+
+    fun removeProgressListener(id: String) { progressListeners.remove(id) }
+
+    /** Fan a song's progress / completion / failure out to [onProgress] and every extra listener (callback executor). */
+    private fun fireProgress(id: String) {
+        val others = progressListeners.values.toList()
+        post {
+            onProgress?.invoke(id)
+            others.forEach { it(id) }
+        }
+    }
+
     private fun stemProgressed(base: String) {
         val primary = onStemProgress
         val others = stemListeners.values.toList()
@@ -479,9 +499,20 @@ class MixStreamLoader(
             val s = streamMap[id] ?: continue
             if (s.isComplete || s.failed) continue
             cancelTransfer(s)
+            markCancelled(s)
             streamMap.remove(id)
             s.file.delete()
         }
+    }
+
+    /**
+     * A cancelled / evicted stream will never get more bytes: mark it FAILED and tell the listeners, so no
+     * reader (a deck, the Now Playing DSP) waits on it forever. No failure cooldown: this was deliberate.
+     */
+    private fun markCancelled(s: Stream) {
+        if (s.isComplete) return
+        s.failed = true
+        if (stemSongId(s.songId) == null) fireProgress(s.songId)
     }
 
     // ---- transfer plumbing ----------------------------------------------------------------------
@@ -511,6 +542,7 @@ class MixStreamLoader(
         val victim = live.filter { it.songId !in pinned }.minByOrNull { it.startedAt } ?: return
         telemetry("evict ${victim.songId} (cap $maxConcurrent)")
         cancelTransfer(victim)
+        markCancelled(victim)
         streamMap.remove(victim.songId)
         victim.file.delete()
         post { onFailed?.invoke(victim.songId) } // back to the downloader lane - it still needs the file
@@ -518,7 +550,7 @@ class MixStreamLoader(
 
     private fun notify(key: String) {
         val base = stemSongId(key)
-        if (base != null) stemProgressed(base) else post { onProgress?.invoke(key) }
+        if (base != null) stemProgressed(base) else fireProgress(key)
     }
 
     private fun handle(event: StreamSink.Event) {
@@ -651,7 +683,7 @@ class MixStreamLoader(
         recentFailures[s.songId] = now
         consecutiveFailures[s.songId] = (consecutiveFailures[s.songId] ?: 0) + 1
         val id = s.songId
-        post { onProgress?.invoke(id) }
+        fireProgress(id)
         post { onFailed?.invoke(id) }
         // Drop the record so a later open (after the cooldown) starts clean.
         streamMap.remove(id)

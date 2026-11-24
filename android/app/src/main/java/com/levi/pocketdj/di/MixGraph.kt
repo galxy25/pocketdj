@@ -642,6 +642,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             }
             override val isPlaying get() = engine.isPlaying
             override val hasSounded get() = engine.hasStarted
+            override val isBuffering get() = engine.isBuffering
             override fun play() = engine.play()
             override fun pause() = engine.pause()
             override fun skipNext() { npMain.launch { controller.next() } }
