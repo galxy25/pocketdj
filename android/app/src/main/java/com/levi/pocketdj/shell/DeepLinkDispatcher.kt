@@ -38,6 +38,11 @@ class DeepLinkSeams {
     @Volatile var playItem: ((PlayKind, String, Boolean) -> String?)? = null
     @Volatile var addToCollection: ((collectionId: String, songId: String?) -> Unit)? = null
     @Volatile var pocketNow: (() -> Unit)? = null
+    /** P2-SURF-10: `pocketdj://np/mixmode` / `np/stem/...` (the seams post their own snackbar) — default says not available. */
+    @Volatile var nowPlayingMixMode: ((on: Boolean) -> Unit)? = null
+    @Volatile var nowPlayingStem: ((StemPart, muted: Boolean) -> Unit)? = null
+    /** P2-SURF-11: `pocketdj://create-pocket?brief=` — default says it isn't available (never a silent drop). */
+    @Volatile var createPocket: ((brief: String) -> Unit)? = null
     @Volatile var autoMix: ((MixSource, shuffle: Boolean) -> Unit)? = null
     @Volatile var joinJukebox: ((id: String, guestBase: String?) -> Unit)? = null
     @Volatile var importCollection: ((uri: String) -> Unit)? = null
@@ -81,9 +86,15 @@ class DeepLinkDispatcher(
     @Volatile private var remoteJoinParkedAt = 0L
 
     /** The parked token, unless it is stale (an old scan must not join a session minutes later). */
-    fun takePendingRemoteJoin(): String? {
+    fun takePendingRemoteJoin(): String? = takePendingRemoteJoinTarget()?.first
+
+    @Volatile private var remoteJoinInternet = false
+
+    /** Like [takePendingRemoteJoin], plus whether the invite was a broker (`join-net`) one: the starter must match what the inviter used. */
+    fun takePendingRemoteJoinTarget(): Pair<String, Boolean>? {
+        val internet = remoteJoinInternet
         val token = _pendingRemoteJoin.getAndUpdate { null } ?: return null
-        return if (clock() - remoteJoinParkedAt <= REMOTE_JOIN_TTL_MS) token else null
+        return if (clock() - remoteJoinParkedAt <= REMOTE_JOIN_TTL_MS) token to internet else null
     }
 
     private val _pendingGame = MutableStateFlow<GameLink?>(null)
@@ -156,6 +167,7 @@ class DeepLinkDispatcher(
                 val join = seams.remoteJoin
                 if (join != null) join(link.token) else {
                     remoteJoinParkedAt = clock()
+                    remoteJoinInternet = link.internet
                     _pendingRemoteJoin.value = link.token
                     postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
                     seams.showRemote?.invoke()
@@ -194,9 +206,36 @@ class DeepLinkDispatcher(
                 val mix = seams.autoMix
                 if (mix != null) mix(link.source, link.shuffle) else postMessage("Auto-Mix isn't available yet")
             }
+            is DeepLink.CreatePocket -> {
+                if (link.brief == null) {
+                    // No brief: land on Collections with the Create pocket sheet open.
+                    com.levi.pocketdj.data.pockets.CreatePocketRequests.request()
+                    postRoute(ShellRoute.Tab(PocketDjDestination.Playlists))
+                } else {
+                    val create = seams.createPocket
+                    if (create != null) create(link.brief) else postMessage("Creating pockets isn't available yet")
+                }
+            }
             DeepLink.PocketNow -> {
                 val pocket = seams.pocketNow
                 if (pocket != null) pocket() else postMessage("Pocket for now isn't available yet")
+            }
+            is DeepLink.NowPlayingMixMode -> {
+                val seam = seams.nowPlayingMixMode
+                if (seam != null) seam(link.on) else postMessage("Mix Mode by link isn't available yet")
+            }
+            is DeepLink.NowPlayingStem -> {
+                val seam = seams.nowPlayingStem
+                if (seam != null) seam(link.stem, link.muted) else postMessage("Stems by link aren't available yet")
+            }
+            is DeepLink.LinkDevice -> {
+                // Dormant until the live endpoints doc publishes profileSyncBase: nothing changes, nothing is parked.
+                if (com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase == null) {
+                    postMessage("Device sync isn't available yet")
+                } else {
+                    com.levi.pocketdj.data.sync.LinkDeviceRequests.request(link.code)
+                    postRoute(ShellRoute.Settings)
+                }
             }
             is DeepLink.Unresolved -> postMessage(link.message)
             is DeepLink.Navigate -> postRoute(link.route)

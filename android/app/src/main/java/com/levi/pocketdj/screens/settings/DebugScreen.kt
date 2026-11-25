@@ -494,6 +494,23 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         // Wave-8 seed (P2-REM-7): the Remote screen over an in-memory two-device session.
         var showRemoteLoopback by remember { mutableStateOf(false) }
         OutlinedButton(onClick = { showRemoteLoopback = true }) { Text("Remote loopback") }
+        // Wave-11 seed (P2-REM-13): the REAL controller joined to an in-memory peer, then Mix Together started (banner + mix.event lines).
+        OutlinedButton(onClick = {
+            val rg = host.graph.remoteGraph
+            val hub = com.levi.pocketdj.remote.LoopbackHub()
+            val peerTarget = com.levi.pocketdj.remote.InMemoryRemoteTarget()
+            val peerClock = com.levi.pocketdj.remote.SharedClock()
+            val peer = com.levi.pocketdj.remote.RemoteSessionController(
+                target = peerTarget, resolver = com.levi.pocketdj.remote.RemoteSongResolver(catalogItem = { com.levi.pocketdj.playback.sequencer.QueueItem(id = it) }),
+                deviceName = { "Showcase peer" }, platform = "android", clock = peerClock, scope = host.scope,
+            )
+            peer.localCaps = peer.localCaps + com.levi.pocketdj.remote.mix.MixCapability.DECK_OWNER
+            val mine = hub.join("a-real"); val theirs = hub.join("b-peer")
+            rg.controller.attach(mine, com.levi.pocketdj.remote.RemoteSessionMode.LISTEN_TOGETHER, asHost = true)
+            peer.attach(theirs, com.levi.pocketdj.remote.RemoteSessionMode.LISTEN_TOGETHER, asHost = false)
+            rg.mixSync.start()
+            android.util.Log.d("PdjVerify", "mix loopback started active=${rg.mixSync.ui.value.active}")
+        }) { Text("Mix Together loopback") }
         if (showRemoteLoopback) {
             val songs = remember { host.graph.catalogRepository.state.value.catalog?.songsById?.values?.toList().orEmpty() }
             RemoteLoopbackDialog(songs = songs.take(20), onDismiss = { showRemoteLoopback = false })
@@ -692,6 +709,14 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         return com.levi.pocketdj.mix.model.Deck.entries.joinToString(" | ") { d ->
             "${d.label}:${e.loaded(d)?.songId?.takeLast(4) ?: "-"} play=${e.isPlaying(d)} pos=${"%.1f".format(e.position(d))}/${"%.1f".format(e.duration(d))} rate=${e.rate(d)} vol=${e.volume(d)}"
         }
+    }
+    // P2-REM-12 emulator seam: nothing consumes `gestureTap` until Mix Together lands (REM-13), so log every tap to PocketDJ.mix.
+    var logTaps by remember { mutableStateOf(host.graph.mixGraph.mixEngine.gestureTap != null) }
+    ToggleRow("Mix: log gesture taps", logTaps) { on ->
+        logTaps = on
+        host.graph.mixGraph.mixEngine.gestureTap = if (on) { g ->
+            com.levi.pocketdj.diag.NPLog.lane("mix", "gesture tap kind=${g.kind} deck=${g.deck?.label} param=${g.param} value=${g.value} flag=${g.flag} cause=${g.cause}")
+        } else null
     }
     // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {

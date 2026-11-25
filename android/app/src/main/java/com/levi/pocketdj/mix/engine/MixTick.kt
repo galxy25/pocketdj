@@ -64,7 +64,7 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
             // mix. Positions deliberately do NOT advance: nothing is rendering. ~1 try/s.
             if (now - lastWatchdogAt >= WATCHDOG_MS) {
                 lastWatchdogAt = now
-                e.watchdogRecover()
+                e.caused(Gesture.Cause.ENGINE) { e.watchdogRecover() }
             }
         }
         e.refreshTransport()
@@ -79,7 +79,7 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
         val st = e.deckState(d)
         val dur = e.duration(d)
         if (dur <= 0) {                 // nothing / zero-length loaded: don't run the playhead forever
-            if (!e.autoMixing) { e.setPlaying(d, false); e.controller(d).pause() }
+            if (!e.autoMixing) e.caused(Gesture.Cause.ENGINE) { e.setPlaying(d, false); e.controller(d).pause() }
             return
         }
         if (e.streamHeld(d)) {          // streaming: waiting for bytes, the playhead is frozen
@@ -88,21 +88,23 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
         }
         val loop = e.loopWindow(d)
         if (loop != null) {
-            var p = e.position(d) + dt * st.rate
+            var p = e.position(d) + dt * e.effectiveRate(d)
             if (p >= loop.second) p = loop.first + (p - loop.first) % (loop.second - loop.first)
             e.setPosition(d, p)
             e.onDeckTick?.invoke(d, p)
             return
         }
-        val pos = minOf(e.position(d) + dt * st.rate, dur)   // source advances at rate x wall time
+        val pos = minOf(e.position(d) + dt * e.effectiveRate(d), dur)   // source advances at rate x wall time
         e.setPosition(d, pos)
         e.onDeckTick?.invoke(d, pos)
         val autoRunning = e.autoMixing && e.autoDj?.isPaused != true
         if (pos >= dur && !autoRunning) {
             // A SUSPENDED machine never transitions, so a deck reaching its end retires like a
             // manual deck; otherwise it "plays" at dur forever.
-            e.setPlaying(d, false)
-            e.controller(d).pause()
+            e.caused(Gesture.Cause.ENGINE) {
+                e.setPlaying(d, false)
+                e.controller(d).pause()
+            }
         }
     }
 

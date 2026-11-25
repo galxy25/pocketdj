@@ -427,7 +427,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.auto.AutoBrowseDebug.run(
                     app.appContext, app.appScope,
                     picks = intent.getStringExtra("pdj.autoPick").orEmpty().split("|").filter { it.isNotBlank() },
-                    roots = listOf("Mix", "Jukebox", "For You"),
+                    roots = listOf("Mix", "Jukebox", "For You", "Up Next"),
                 )
             }
             false // never consumes the intent
@@ -437,6 +437,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy {
         listOf(
             com.levi.pocketdj.screens.settings.sections.backupSection(),
+            com.levi.pocketdj.screens.settings.sections.editsSection(),
             com.levi.pocketdj.screens.settings.sections.collectionsSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicWriteBackSection(),

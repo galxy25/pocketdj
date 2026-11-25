@@ -7,6 +7,8 @@ import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.Setlist
+import com.levi.pocketdj.data.pockets.PocketBuilderService
+import com.levi.pocketdj.data.pockets.PocketFitter
 import com.levi.pocketdj.data.pockets.wheel.PocketMomentKey
 import com.levi.pocketdj.data.pockets.wheel.PocketWheelController
 import com.levi.pocketdj.playback.PlayContext
@@ -39,6 +41,7 @@ sealed class ShellActionException(message: String) : Exception(message) {
     /** Mix Together owns the decks (`MixTogetherBlock.REASON`). */
     class MixTogetherActive(why: String) : ShellActionException(why)
     data object MixUnavailable : ShellActionException("Auto-Mix isn't available yet")
+    data object MixModeUnavailable : ShellActionException("Mix Mode and stems aren't available yet")
 
     /** The queue started nothing (every row unplayable on this device). */
     class NothingPlayable(val name: String) :
@@ -53,6 +56,11 @@ sealed class ShellActionException(message: String) : Exception(message) {
 
     /** "Add this song" with nothing loaded in Now Playing or the Mix. */
     data object NothingPlaying : ShellActionException("Nothing is playing in PocketDJ right now.")
+
+    /** Stems by voice while the Mix tab is live (iOS `mixTabLive`). */
+    data object MixTabLive : ShellActionException(
+        "The Mix tab is playing. Stems by voice work on Now Playing — use the Mix tab's stem pads for its decks.",
+    )
 
     /** The pocket / playlist an add names no longer exists (or is the reserved Now Playing set). */
     data object CollectionNotFound : ShellActionException("I couldn't find that pocket or playlist in PocketDJ.")
@@ -116,8 +124,14 @@ class ShellActions(
     /** Assigned by the Mix area; null ⇒ every Auto-Mix action says it isn't available. */
     @Volatile var mixFacade: MixFacade? = null
 
+    /** The "Create pocket" build service (P2-SURF-11); null until wired, then every create door says it isn't available. */
+    @Volatile var pocketBuilder: PocketBuilderService? = null
+
     /** The Pocket Wheel (P2-POC-16). A provider so the lazily built wheel is only touched when an action needs it. */
     @Volatile var pocketWheel: (() -> PocketWheelController?)? = null
+
+    /** Now Playing's mini-mix (P2-SURF-10); null ⇒ Mix Mode / stem voice actions say they aren't available. */
+    @Volatile var nowPlayingVoice: NowPlayingVoiceActions? = null
 
     private val kickedManifestRefresh = AtomicBoolean(false)
 
@@ -289,6 +303,48 @@ class ShellActions(
         return AddToCollectionAction(collections).add(id, title, collectionId)
     }
 
+    // ---- Now Playing Mix Mode + stems by voice (iOS setNowPlayingMixMode / setStem) ----
+
+    /** "Turn on Mix Mode" / "Turn off Mix Mode". Returns the sentence to say. */
+    suspend fun setNowPlayingMixMode(on: Boolean): String {
+        veto()
+        ensureReady()
+        val voice = nowPlayingVoice ?: throw ShellActionException.MixModeUnavailable
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { voice.setMixMode(on) } // DSP state is main-thread
+    }
+
+    /** "Mute the vocals" / "Unmute the drums". Returns the sentence to say. */
+    suspend fun setStem(stem: StemPart, muted: Boolean): String {
+        veto()
+        ensureReady()
+        val voice = nowPlayingVoice ?: throw ShellActionException.MixModeUnavailable
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { voice.setStem(stem, muted) }
+    }
+
+    /**
+     * "Create a pocket of <brief>": veto + ensureReady, then the build runs async (the pocket appears in
+     * Collections when it lands; the banner shows progress). Returns the line to speak / toast.
+     */
+    suspend fun createPocket(brief: String, minutes: Int = PocketFitter.DEFAULT_MINUTES): String {
+        veto()
+        val builder = pocketBuilder ?: throw ShellActionException.PlaybackFailed("Building pockets isn't available right now.")
+        val text = brief.trim()
+        if (text.isEmpty()) throw ShellActionException.PlaybackFailed("Tell me what the pocket should be, like “90s chill hip hop”.")
+        ensureReady()
+        val job = builder.kickOff(text, minutes)
+            ?: return "Already building a pocket. I'll add this one when it's done."
+        // Doors outside the Collections tab have no banner: surface the outcome as a notice.
+        job.invokeOnCompletion { cause ->
+            if (cause != null) return@invokeOnCompletion
+            when (val ph = builder.phase.value) {
+                is PocketBuilderService.Phase.Failed -> NavRequestBus.postNotice(ph.message)
+                is PocketBuilderService.Phase.Done -> NavRequestBus.postNotice("Created pocket “${ph.name}” (${ph.songCount} songs).")
+                else -> Unit
+            }
+        }
+        return "Building a pocket for “$text”. It will show up in Collections."
+    }
+
     // ---- navigation ----
 
     /** Raise a navigation request (consumed by the shell). Not vetoed: onboarding gates the shell itself. */
@@ -432,6 +488,26 @@ fun pocketNowLinkSeam(
     onLaunched(scope.launchAction(postMessage, "Couldn't play your pocket.") { pocketPlayingLine(actions.playPocketForNow()) })
 }
 
+/** The `pocketdj://np/mixmode?on=` seam: the spoken sentence (or the failure line) as a snackbar. */
+fun mixModeLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (Boolean) -> Unit = { on ->
+    onLaunched(scope.launchAction(postMessage, "Couldn't change Mix Mode.") { actions.setNowPlayingMixMode(on) })
+}
+
+/** The `pocketdj://np/stem/<name>?mute=` seam. Runs on the main thread (the DSP engage is main-thread state). */
+fun stemLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (StemPart, Boolean) -> Unit = { stem, muted ->
+    onLaunched(scope.launchAction(postMessage, "Couldn't change that stem.") { actions.setStem(stem, muted) })
+}
+
 /** The `pocketdj://automix/...` seam (veto + ensureReady inside [ShellActions.startAutoMix]). */
 fun autoMixLinkSeam(
     actions: ShellActions,
@@ -445,4 +521,14 @@ fun autoMixLinkSeam(
             autoMixLine(r.name, r.count, shuffle)
         },
     )
+}
+
+/** The `pocketdj://create-pocket?brief=...` seam: [ShellActions.createPocket], result (or failure) as a notice. */
+fun createPocketLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (String) -> Unit = { brief ->
+    onLaunched(scope.launchAction(postMessage, "Couldn't build that pocket.") { actions.createPocket(brief) })
 }

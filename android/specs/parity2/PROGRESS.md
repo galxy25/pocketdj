@@ -176,3 +176,52 @@ Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave9/; app data 
 - P2-REM-11: pure, no emulator step.
 No FATAL EXCEPTION / ANR from com.levi.pocketdj. Open: P2Q28-P2Q30.
 
+
+
+## Wave 10
+
+Packages merged: P2-DJ-12, P2-REM-12, P2-SURF-10, P2-SURF-11, P2-SURF-8, P2-SURF-9, P2-ALB-8, P2-LIB-5. One conflict set (DeepLinkDispatcher.kt, DeepLinkParser.kt, ShellActions.kt, shortcuts.xml): SURF-10 (`np/mixmode`, `np/stem`, nowPlayingMixMode/nowPlayingStem seams) and SURF-11 (`create-pocket`, createPocket seam) both appended; kept both. Status files set to merged.
+
+Tests: 7837 run, 0 failures (`:app:testDebugUnitTest :app:assembleDebug` green; DJ-11 was 7485). assembleRelease not run (no manifest/gradle/proguard/library change beyond SURF-10/11 xml capability entries, which assembleDebug processes).
+
+Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave10/; seed rip playlist burned 12/13 first):
+- P2-DJ-12 PASS: DJ on over the seed queue; sampled the Now Playing panel every ~3 s through two transitions: Tempo 0.98 -> 1.00 -> 1.07 -> 1.15 -> 0.80 -> 0.86 -> 0.95 -> 1.00, Reverb amount row appears/disappears, Leveling readout +3.4 dB then +1.8 dB with the meter (np-mix-leveling). Device-only: listen test.
+- P2-SURF-10 PASS: `am start -d pocketdj://np/stem/vocals?mute=1` with the seed queue playing: Mix Mode on, stems engaged, vocals muted, toast "Muted the vocals - the stems are loading, so it takes effect in a moment." (panel screencap).
+- P2-SURF-11 PASS: Collections > Create pocket from a description > "nineties hip hop" -> "Created "Nineties Hip Hop": 25 songs, about 89 min." (also "chill soul" -> 21 songs, 89 min via the keyboard check key). Minor: the on-screen keyboard covers the sheet's Create button (the IME check key submits); `imePadding` did not help inside the ModalBottomSheet, left as is. Device-only: Gemini Nano.
+- P2-SURF-8 PASS: Auto browse dump lists `Up Next {upnext}` with 12 rows `upnext:<uid>` (repeats distinct); `pdj.autoPick=upnext:<uid>` jumped (Scratch Introlude playing, list shrank to the remaining row). Device-only: DHU.
+- P2-SURF-9 PASS (rows) / not verifiable (QR): after Debug "AutoDJ: start" the Mix tab lists shortfall-free rows FX Glide, Audio Glide, 4 FX slots, Tempo -/+, Pitch -/+, Stems, 4 stem mutes; picking "Tempo +" twice moved the lead deck 100% -> 101% -> 102%, "Stems" turned stems On, "Vocals" -> Muted. The Jukebox QR row needs a reachable broker (the node showed "Couldn't reach the jukebox server"), so only unit tests cover it (P2Q33). Device-only: DHU artwork size.
+- P2-ALB-8 PASS: Album > Edit changed the year 2018 -> 2019; album header and Browse list show 2019; Settings > Edits shows "1 local metadata edit"; Export wrote /sdcard/Download/pocketdj-edits.json `{"schemaVersion":2,"albums":{"alb_447541ce119c":{"year":2019}},...,"platform":"android"}`; Clear (confirm dialog) returned the count to 0.
+- P2-LIB-5 PASS after a fix: playing "Scratch Introlude" from the Juslisen album page showed the inline panel under the row (play/pause, title, collapse, X, waveform, scrubber); tapping X (Stop and close player) removed the panel and the mini player. BUG found and fixed: after an Apple Music 30 s preview played outside the sequencer, the stopped sequencer's stale current song claimed the panel, so the audible song's panel appeared under the wrong row (Juslisen row 1 showed "Now We Lay 'Em Down"). `InlinePlayerState.liveSequencerId` now ignores the sequencer's current when it is not running (regression assertions in InlinePlayerStateTest).
+- P2-REM-12 PASS: Debug "Mix: load 2 + play" still loads and plays 2 decks; with the new debug toggle "Mix: log gesture taps" (nothing consumes `gestureTap` until REM-13, so the step needed a seam) dragging the crossfader logged `PocketDJ.mix: gesture tap kind=crossfader value=0.58...0.83 cause=USER`.
+- No FATAL EXCEPTION / ANR from com.levi.pocketdj except the Auto stand-in crash below (found, harness-fixed).
+
+Integrator changes: InlinePlayerPanel stale-sequencer fix + test; AutoBrowseDebug (Up Next in the dump roots, calls the shell select directly through `PlaybackService.debugSelect` instead of a media3 `setMediaItem`, which crashed the app with a media3 1.6.1 controller-side `PlayerInfo.build` IllegalStateException when the session refused the set; releases the browser after a pick); DebugScreen "Mix: log gesture taps" toggle.
+
+Open: P2Q31-P2Q35.
+
+## Wave 11
+
+Merged: P2-REM-13 (Mix Together), P2-REM-10 (internet broker), P2-SOC-2 (QR scan + link deep link), P2-SURF-12 (AppFunctions), P2-SURF-6 (search/assist/pin). Tests: 7927, 0 failures; assembleDebug green (assembleRelease passed per SOC-2/SURF-12/SURF-6 reports).
+
+Emulator (API 36, screenshots in pocketdj-parity2-pkgs/_shots/wave11/):
+- P2-REM-13 PASS: new debug button "Mix Together loopback" joins the real controller to an in-memory peer and starts Mix Together; the Mix tab shows the "Mixing together" banner (Your deck A, You / Showcase peer, Release/Claim; Release -> "No deck - claim one" and Deck A Free). Two-phone 40 ms sync: device-only, not verifiable.
+- P2-REM-10 PASS: local jukebox-server on :8791, app set to http://10.0.2.2:8791, "Over the internet" switch appeared; Listen Together created room, join code shown; a curl client joined, polled the host's state envelopes, and send was accepted. No crash.
+- P2-SOC-2 PASS: with an injected endpoints doc (green doc, offline so the live refresh does not overwrite it) `pocketdj://link/<valid code>` opens Settings with the code in the link flow; Scan code shows the camera rationale, then the system permission prompt, then a live (black emulator) preview. Without the doc the link says "Device sync isn't available yet" (dormant, as designed). Two-device link/pull: device-only.
+- P2-SURF-12 PASS: `cmd app_function` has no shell implementation on this image, but `dumpsys app_function` lists all 12 PocketDjAppFunctions as indexed by the platform. Gemini on a phone: device-only.
+- P2-SURF-6 PASS: SEARCH_ACTION (pkg-targeted) opens Browse search with "drake"; pocket menu "Add to Home screen" shows the pin dialog.
+- No FATAL EXCEPTION / ANR.
+
+Integrator changes: `ksp { arg("appfunctions:aggregateAppFunctions","true") }` in app/build.gradle.kts (app module aggregates app_functions*.xml); DebugScreen "Mix Together loopback" seed.
+
+Notes: an unqualified SEARCH_ACTION intent shows a chooser (Drive/Maps also handle it) - expected. Open: P2Q36-P2Q40.
+
+## Wave 12
+
+Merged: P2-REL-1 (release docs, ledger reconciliation, DEVICE-CHECKLIST, RELEASE.md). Docs-only. Tests: 7927, 0 failures (count unchanged by design); assembleDebug and assembleRelease green (needed -Pkotlin.daemon.jvmargs=-Xmx6g).
+
+Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave12/):
+- P2-REL-1 smoke PASS (partial wheel): release APK (assembleRelease, zipaligned + debug-key signed because release-aab.sh needs the real keys) installs and launches; onboarding -> Browse/Collections/History/More render, no FATAL. Debug build: seed rip + burn + "Play seed queue" plays (PlaybackState PLAYING), Mix Mode and DJ Mode chips toggled during playback, Mix tab (two decks) renders, Remote showcase seed (pdj.seedRemote=showcase) shows Backseat session with Car at 1:37. No FATAL/ANR from com.levi.pocketdj (only unrelated GMS DeviceDoctor lines).
+- Wheel tab: not visible on a fresh pocket; it is gated on the server "wheel" capability (serverSupportsWheel), and the emulator has no pockets server, so it cannot appear here. Device/server-only.
+- Release build smoke ran Browse/Collections/History/More only (release has no debug seeds, so playback was smoked on the debug build).
+
+Open: signed AAB not built (needs signing keys, run android/scripts/release-aab.sh from main). docs/legal/PRIVACY.md still says Android does not read physical activity; replacement text is in RELEASE.md section 4, must be applied before shipping.

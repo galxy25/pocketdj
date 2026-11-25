@@ -1245,3 +1245,9 @@ Review → Fix → Integrate):
 `build_roadmap.py` and `check_roadmap.py` (dependency order, disjoint files, one owner per
 hot file per wave), then update §2/§3 here if a decision moved. Never hand-edit
 `roadmap.json`.
+
+---
+
+## Parity 2 follow-on
+
+All packages of this program are merged; the ledger rows in `ARCHITECTURE-ANDROID.md` are reconciled (the stale MIX-18 "Planned" row is now Merged, `a8c08625`, along with the other rows whose merge commits existed). Later iOS parity work (Mix Mode, DJ Mode, pocket wheel, Remote, vinyl album sides, system surfaces) is tracked in [`android-parity2.md`](./android-parity2.md) and the "Parity 2 status ledger" in `ARCHITECTURE-ANDROID.md`.

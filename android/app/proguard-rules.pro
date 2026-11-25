@@ -95,3 +95,16 @@
 -keep,allowobfuscation,allowshrinking class retrofit2.Response
 -keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
 -dontwarn retrofit2.**
+
+# --- AppFunctions (Gemini tools): appfunctions-service finds the KSP-generated inventory and factory
+# classes (`$<Class>_AppFunctionInventory`, `$<Class>_AppFunctionFactory`) by name at runtime, and the
+# AppFunction host classes are instantiated through them. Keep them so R8 cannot drop or rename them.
+# (Not yet verified on an API 36 emulator against the minified build: run
+# `adb shell cmd app_function list-app-functions` on a release build.)
+-keep class androidx.appfunctions.** { *; }
+-keep class com.levi.pocketdj.assistant.PocketDjAppFunctions { *; }
+-keep class com.levi.pocketdj.assistant.**_AppFunctionInventory { *; }
+-keep class com.levi.pocketdj.assistant.**_AppFunctionFactory { *; }
+-keep class com.levi.pocketdj.assistant.**AppFunctionInventory* { *; }
+-keep class com.levi.pocketdj.assistant.**AppFunctionFactory* { *; }
+-dontwarn androidx.appfunctions.**

@@ -8,4 +8,6 @@
     <string name="shortcut_mix_long">Open the Mix</string>
     <string name="shortcut_pocket_now_short">Play my pocket</string>
     <string name="shortcut_pocket_now_long">Play the pocket that fits right now</string>
+    <string name="shortcut_create_pocket_short">Create pocket</string>
+    <string name="shortcut_create_pocket_long">Create a pocket from a description</string>
 </resources>

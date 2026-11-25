@@ -55,6 +55,18 @@ object JukeboxUrls {
     fun sessionInfo(base: String, jukeboxId: String): HttpUrl? =
         root(base)?.addPathSegment("sessions")?.addPathSegment(jukeboxId)?.build()
 
+    /** `POST {base}/remote` — create a Remote broker room (P2-REM-10). */
+    fun remoteCreate(base: String): HttpUrl? = root(base)?.addPathSegment("remote")?.build()
+
+    /** `{base}/remote/{roomId}/{op}` for op in join | send | poll | leave (P2-REM-10). */
+    fun remoteRoom(base: String, roomId: String, op: String): HttpUrl? =
+        root(base)?.addPathSegment("remote")?.addPathSegment(roomId)?.addPathSegment(op)?.build()
+
+    /** `GET {base}/remote/{roomId}/poll?since=&rev=` — the 25 s long-poll. */
+    fun remotePoll(base: String, roomId: String, since: Long, rev: Long): HttpUrl? =
+        remoteRoom(base, roomId, "poll")?.newBuilder()
+            ?.addQueryParameter("since", since.toString())?.addQueryParameter("rev", rev.toString())?.build()
+
     private fun root(base: String): HttpUrl.Builder? =
         normalizedBase(base).toHttpUrlOrNull()?.newBuilder()
 

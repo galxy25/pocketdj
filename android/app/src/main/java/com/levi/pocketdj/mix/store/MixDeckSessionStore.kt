@@ -243,8 +243,29 @@ class MixDeckSessionStore(
     /** The on-disk document (cloud-sync registration reads the same file). */
     val syncFile: File get() = file
 
+    private var suspended = false
+
+    /**
+     * Multiplayer Mix owns the decks (P2-REM-12): while suspended every write ([save], [saveDebounced], [updatePosition],
+     * [clear]) is a no-op, so remote-applied state can never overwrite the user's own saved mix: the file stays exactly what
+     * it was before the session, crash or not. Suspending first LANDS any pending debounced write (the user's own last
+     * gesture). [flush] still writes the held (pre-session) snapshot.
+     */
+    fun suspendWrites(on: Boolean) {
+        val flushPending = synchronized(lock) {
+            if (suspended == on) return
+            val pending = on && debounceArmed
+            suspended = on
+            pending
+        }
+        if (flushPending) flush()   // ([flush] is not a mutation: it writes the held snapshot)
+    }
+
+    val isSuspended: Boolean get() = synchronized(lock) { suspended }
+
     /** STRUCTURAL change: persists immediately, superseding any pending debounce. */
     fun save(snapshot: MixDeckSnapshot, nowMs: Long = clock()) = synchronized(lock) {
+        if (suspended) return@synchronized
         cancelDebounce()
         current = snapshot.copy(updatedAt = nowMs.toDouble())
         writeNow(nowMs)
@@ -255,6 +276,7 @@ class MixDeckSessionStore(
      * [controlDebounceIntervalMs] after the burst ends (the drag's final value always persists).
      */
     fun saveDebounced(snapshot: MixDeckSnapshot, nowMs: Long = clock()) = synchronized(lock) {
+        if (suspended) return@synchronized
         current = snapshot.copy(updatedAt = nowMs.toDouble())
         if (debounceArmed) return@synchronized   // an armed write picks up the latest state
         debounceArmed = true
@@ -274,6 +296,7 @@ class MixDeckSessionStore(
      * No-op when no mix is active.
      */
     fun updatePosition(aMs: Int?, bMs: Int?, isRunning: Boolean, nowMs: Long = clock()) = synchronized(lock) {
+        if (suspended) return@synchronized
         val snap = current ?: return@synchronized
         val wasRunning = snap.wasRunning
         current = snap.copy(
@@ -291,6 +314,7 @@ class MixDeckSessionStore(
     fun awaitWrites() = writer.awaitIdle()
 
     fun clear() = synchronized(lock) {
+        if (suspended) return@synchronized
         cancelDebounce()
         current = null
         version += 1

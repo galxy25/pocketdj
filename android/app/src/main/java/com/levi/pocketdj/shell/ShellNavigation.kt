@@ -114,6 +114,7 @@ fun pushRouteFor(route: ShellRoute): String? = when (route) {
     is ShellRoute.Setlist -> setlistRoute(route.id, route.autoplay)
     is ShellRoute.SourcePlaylist -> sourcePlaylistRoute(route.id, route.sourceName)
     is ShellRoute.JukeboxJoin -> jukeboxJoinRoute(route.id)
+    ShellRoute.Settings -> SETTINGS_ROUTE
     is ShellRoute.BrowseSearch, is ShellRoute.Tab -> null
 }
 
@@ -242,6 +243,10 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
     val currentDestination = backStackEntry?.destination
     val currentRoute = currentDestination?.route
     val appSnackbar = remember { SnackbarHostState() }
+    // SURF-6: tell MainActivity.onProvideAssistContent whether Now Playing is on screen.
+    androidx.compose.runtime.SideEffect {
+        com.levi.pocketdj.assistant.AssistContent.currentRoute = currentRoute
+    }
 
     // App-level snackbar: surfaces async playback errors (a failed rip-on-demand
     // finishes long after the tab that started it may be gone).
@@ -415,6 +420,7 @@ private fun ShellRoute.homeTab(): PocketDjDestination? = when (this) {
     is ShellRoute.Playlist, is ShellRoute.Pocket, is ShellRoute.Setlist,
     is ShellRoute.SourcePlaylist -> PocketDjDestination.Playlists
     is ShellRoute.JukeboxJoin -> PocketDjDestination.Jukebox
+    ShellRoute.Settings -> null
 }
 
 @Composable

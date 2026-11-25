@@ -359,6 +359,11 @@ class MediaSearchIntentHandler(
                 scope.launch { handler().handle(request) }
                 return true
             }
+            SearchActionQuery.GMS_SEARCH_ACTION, SearchActionQuery.MEDIA_SEARCH -> {
+                val q = SearchActionQuery.parse(intent.action) { intent.getStringExtra(it) } ?: return false
+                openRoute(ShellRoute.BrowseSearch(q))
+                return true
+            }
             ACTION_OPEN_TAB -> {
                 val dest = PocketDjDestination.entries.firstOrNull { it.route == intent.getStringExtra(EXTRA_TAB) }
                     ?: return false

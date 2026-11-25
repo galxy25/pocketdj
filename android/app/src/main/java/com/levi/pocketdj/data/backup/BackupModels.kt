@@ -126,7 +126,9 @@ object BackupEdits {
     }
 
     /** Re-stamp schemaVersion + meta (iOS `EditsStore.exportData` does the same) so exports never carry a stale origin. */
-    fun restamp(data: ByteArray?, appVersion: String = "", now: java.time.Instant = java.time.Instant.now()): ByteArray? {
+    fun restamp(
+        data: ByteArray?, appVersion: String = "", now: java.time.Instant = java.time.Instant.now(), platform: String = "Android",
+    ): ByteArray? {
         val o = parse(data) ?: return data
         val out = buildJsonObject {
             put("schemaVersion", SCHEMA_VERSION)
@@ -134,7 +136,7 @@ object BackupEdits {
             put("songs", map(o, "songs"))
             o.forEach { (k, v) -> if (k !in setOf("schemaVersion", "albums", "songs", "meta")) put(k, v) }
             put("meta", buildJsonObject {
-                put("exportedAt", now.toString()); put("appVersion", appVersion); put("platform", "Android")
+                put("exportedAt", now.toString()); put("appVersion", appVersion); put("platform", platform)
             })
         }
         return out.toString().toByteArray(Charsets.UTF_8)

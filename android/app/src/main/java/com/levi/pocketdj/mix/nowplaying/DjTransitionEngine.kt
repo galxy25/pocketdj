@@ -190,6 +190,7 @@ class DjTransitionEngine internal constructor(
             np.djSetOwnOverlay(outOverlay(0.0))
         }
         if (!spec.plan.hasPreRoll) fadeStart() else ensureTicker()
+        np.djAutomationChanged()
         return null
     }
 
@@ -268,6 +269,7 @@ class DjTransitionEngine internal constructor(
         phaseElapsed = 0.0
         setFade(0.0)
         ensureTicker()
+        np.djAutomationChanged()
 
         val accepted = onFadeStart?.invoke(sp.incoming.songId) ?: true
         if (!accepted) revertFadeStart(outgoing, controls, savedArm)
@@ -295,6 +297,7 @@ class DjTransitionEngine internal constructor(
         } else if (sp != null && sp.plan.hasPostRoll && !glideDropped) {
             phase = DjPhase.POSTROLL
             phaseElapsed = 0.0
+            np.djAutomationChanged()
         } else finish(if (glideDropped) "listener" else "complete")
     }
 
@@ -310,6 +313,7 @@ class DjTransitionEngine internal constructor(
         spec = null
         inc = null
         cutting = false
+        np.djAutomationChanged()
         onTransitionEnded?.invoke(id, how)
     }
 
@@ -355,6 +359,7 @@ class DjTransitionEngine internal constructor(
         fadeProgress = 0.0
         if (reason != "seek") onHandBack?.invoke(np.djPosition())   // a seek supplies its own playhead
         startEase(from)
+        np.djAutomationChanged()
         onTransitionEnded?.invoke(null, reason)
     }
 
@@ -412,7 +417,7 @@ class DjTransitionEngine internal constructor(
         glideDropped = false
         fadeProgress = 0.0
         ticker?.cancel(); ticker = null
-        if (phase == DjPhase.IDLE && tail == null && inc == null) return
+        if (phase == DjPhase.IDLE && tail == null && inc == null) { np.djAutomationChanged(); return }
         val id = if (phase == DjPhase.FADING || phase == DjPhase.POSTROLL) spec?.incoming?.songId else null
         releaseTail()
         inc?.let { np.djReleaseDeck(it.deck, it.voice, it.run, null, emptyList()) }
@@ -421,6 +426,7 @@ class DjTransitionEngine internal constructor(
         phase = DjPhase.IDLE
         spec = null
         cutting = false
+        np.djAutomationChanged()
         onTransitionEnded?.invoke(id, reason)
     }
 
@@ -488,13 +494,14 @@ class DjTransitionEngine internal constructor(
         ease = Ease(from)
         lastClock = clock()
         ensureTicker()
+        np.djAutomationChanged()
     }
 
     private fun stepEase(dt: Double) {
         val e = ease ?: return
         e.elapsed += dt
         val q = (e.elapsed / EASE_SECONDS).coerceAtMost(1.0)
-        if (q >= 1.0) { ease = null; np.djClearOwnOverlay(); return }
+        if (q >= 1.0) { ease = null; np.djClearOwnOverlay(); np.djAutomationChanged(); return }
         val f = e.from
         np.djSetOwnOverlay(GlideOverlay(f.rateMul + (1 - f.rateMul) * q, f.pitchAdd * (1 - q), f.texture?.let { it.first to it.second * (1 - q) }))
     }

@@ -211,6 +211,7 @@ fun PlaylistDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        com.levi.pocketdj.shell.PinToHomeMenuItem(com.levi.pocketdj.shell.PlayKind.Playlist, playlistId, playlist.name, dismiss)
                         DropdownMenuItem(
                             text = { Text("Paste songs") },
                             enabled = clipboardHasSongs(context),
@@ -585,6 +586,7 @@ private fun NodeRow(
                     OverflowMenu(content = menu)
                 }
             } else {
+                Column {
                 CollectionTrackRow(
                     title = song.name,
                     subtitle = if (rowNote != null) "${song.artist} · $rowNote" else song.artist,
@@ -603,6 +605,8 @@ private fun NodeRow(
                     },
                     trailing = { OverflowMenu(content = menu) },
                 )
+                    com.levi.pocketdj.screens.browse.InlinePlayerSlot(song, song.albumId?.let { catalog?.albumsById?.get(it) })
+                }
             }
         }
 

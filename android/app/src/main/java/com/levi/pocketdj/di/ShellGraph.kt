@@ -142,8 +142,27 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             },
         ).also {
             it.mixFacade = app.mixGraph.mixFacade // MIX-16: the Mix drives Auto-Mix actions
+            it.nowPlayingVoice = com.levi.pocketdj.shell.NowPlayingVoiceActions(com.levi.pocketdj.shell.AppNowPlayingVoicePort(app)) // P2-SURF-10
             it.pocketWheel = { app.pocketsGraph.wheelController } // P2-POC-16: "Play my pocket" / pocketdj://pocket/now
+            it.pocketBuilder = pocketBuilder // P2-SURF-11: "Create a pocket of ..."
         }
+    }
+
+    /**
+     * P2-SURF-11: the app-scoped "Create pocket" builder (banner state lives here). Deterministic grammar everywhere;
+     * Gemini Nano is a runtime-only seam (no ML Kit dependency is linked yet, see the status file), so the provider
+     * answers null.
+     */
+    val pocketBuilder: com.levi.pocketdj.data.pockets.PocketBuilderService by lazy {
+        com.levi.pocketdj.data.pockets.PocketBuilderService(
+            scope = app.appScope,
+            catalog = {
+                app.catalogRepository.state.value.catalog?.let {
+                    com.levi.pocketdj.data.pockets.PocketCatalog(it.songs, it.albumsById)
+                }
+            },
+            persist = { name, ids, description -> app.collections.createPocket(name, ids, description).id },
+        )
     }
 
     /** "This song": the audible owner's track ([com.levi.pocketdj.shell.AudibleOwner]). */
@@ -202,6 +221,14 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** P2-SURF-12: the Gemini AppFunctions' adapter over [shellActions] (built on first Gemini call, API 36+). */
+    fun appFunctionsAdapter(): com.levi.pocketdj.assistant.AppFunctionsAdapter =
+        com.levi.pocketdj.assistant.AppFunctionsAdapter(
+            target = com.levi.pocketdj.assistant.ShellActionsTarget(shellActions),
+            candidates = ::mediaCandidates,
+            songRows = ::songRows,
+        )
+
     /** Tie-break for voice song matches: the audible song, or one already filed in a pocket / playlist. */
     private fun preferSong(songId: String): Boolean {
         val st = app.playbackGraph.sequencer.state.value
@@ -248,7 +275,10 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         }
         deepLinkSeams.addToCollection = com.levi.pocketdj.shell.addLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
         deepLinkSeams.autoMix = com.levi.pocketdj.shell.autoMixLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
+        deepLinkSeams.createPocket = com.levi.pocketdj.shell.createPocketLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
         deepLinkSeams.pocketNow = com.levi.pocketdj.shell.pocketNowLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
+        deepLinkSeams.nowPlayingMixMode = com.levi.pocketdj.shell.mixModeLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
+        deepLinkSeams.nowPlayingStem = com.levi.pocketdj.shell.stemLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
         deepLinkSeams.playItem = com.levi.pocketdj.shell.playLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         SearchPlayBridge.handler = { request ->
             app.appScope.launch { mediaSearch.handle(request) }

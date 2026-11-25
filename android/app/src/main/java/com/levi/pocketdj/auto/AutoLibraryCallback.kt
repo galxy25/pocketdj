@@ -168,6 +168,40 @@ class AutoLibraryCallback(
         parents.forEach { notifyChildrenChanged(it, tree.children(it, 0, Int.MAX_VALUE)?.size ?: 0) }
     }
 
+    private var upNextSignature: String? = null
+    private var upNextCount = 0
+    private var upNextShown: Boolean? = null // null = never evaluated (treated as hidden)
+
+    /**
+     * The sequencer's queue or cursor changed (SequencerListener.onQueueChanged / onTransition / session start+end).
+     * Re-notifies `upnext` ONLY when the row identities/order changed, and the root + tabs when the tab appeared or
+     * vanished (a played-through queue empties it). Safe to over-call.
+     */
+    fun onUpNextChanged() {
+        val up = tree.upNext ?: return
+        val sig = up.signature()
+        if (sig == upNextSignature) return
+        upNextSignature = sig
+        val shown = sig.isNotEmpty()
+        val countChanged = upNextCount != up.count()
+        upNextCount = up.count()
+        val flipped = (upNextShown ?: false) != shown
+        upNextShown = shown
+        if (!notifiedReady) return
+        // Appeared/vanished or the count changed: the root/Playlists subtitle + childCount are stale too.
+        if (flipped || countChanged) notifyLibraryChanged(AutoId.UpNext.encoded)
+        else notifyChildrenChanged(AutoId.UpNext.encoded, up.rows().size)
+    }
+
+    /** A per-row Up Next command button. Returns false when it is not ours / the row is gone (the host shows an error). */
+    fun upNextCommand(action: String, mediaId: String): Boolean {
+        val id = AutoId.decode(mediaId) as? AutoId.UpNextRow ?: return false
+        val up = tree.upNext ?: return false
+        val ok = up.command(action, id.uid)
+        if (ok) onUpNextChanged()
+        return ok
+    }
+
     fun isOurs(mediaId: String): Boolean = AutoId.decode(mediaId) != null
 
     /**
@@ -184,7 +218,12 @@ class AutoLibraryCallback(
                 val mix = tree.mix
                 if (mix == null) done() else run { mix.select(id)?.let(toast) }
             }
-            AutoId.PocketList -> done()
+            AutoId.PocketList, AutoId.UpNext -> done()
+            // Up Next row tap = Play now (jumpToUpcoming by uid). A stale row (already played/removed) only toasts.
+            is AutoId.UpNextRow -> {
+                if (tree.upNext?.playNow(id.uid) != true) fail("That song already played")
+                done()
+            }
             AutoId.PocketNow, is AutoId.PocketMoment -> run { playPocket(id) }
             is AutoId.ForYouTile, is AutoId.ForYouAll -> run { playForYou(id) }
             is AutoId.ForYouRow -> guardPlayable(mediaId) { playForYou(id) }
@@ -275,8 +314,9 @@ class AutoLibraryCallback(
                 .setIsPlayable(n.playable)
                 .setExtras(extras)
             n.subtitle?.let { md.setArtist(it) }
-            AutoArtwork.httpsOrNull(n.artUrl)?.let { md.setArtworkUri(android.net.Uri.parse(it)) }
+            (AutoArtwork.httpsOrNull(n.artUrl) ?: n.artUrl?.takeIf(AutoJukeboxQr::isContentArt))?.let { md.setArtworkUri(android.net.Uri.parse(it)) }
             if (n.addToAction) md.setSupportedCommands(listOf(ACTION_ADD_TO))
+            if (n.upNextActions) md.setSupportedCommands(AutoUpNext.ACTIONS)
             return MediaItem.Builder().setMediaId(n.id).setMediaMetadata(md.build()).build()
         }
     }

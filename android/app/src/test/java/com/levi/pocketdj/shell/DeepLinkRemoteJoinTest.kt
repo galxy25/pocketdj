@@ -12,6 +12,12 @@ class DeepLinkRemoteJoinTest {
         assertEquals(DeepLink.RemoteJoin("ABCD2345"), DeepLinkParser.parse("pocketdj:///remote/join/ABCD2345"))
     }
 
+    @Test fun brokerInviteLinkIsMarkedInternet() {
+        assertEquals(DeepLink.RemoteJoin("ABCD2345", internet = true), DeepLinkParser.parse("pocketdj://remote/join-net/abcd2345"))
+        assertEquals(false, (DeepLinkParser.parse("pocketdj://remote/join/ABCD2345") as DeepLink.RemoteJoin).internet)
+        assertEquals("ABCD2345", com.levi.pocketdj.screens.remote.RemoteJoinCode.parse("pocketdj://remote/join-net/ABCD2345"))
+    }
+
     @Test fun malformedRemoteLinksAreNone() {
         assertEquals(DeepLink.Remote(null), DeepLinkParser.parse("pocketdj://remote/join/")) // no code: just open the Remote half
         assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://remote/join/a!b"))
@@ -45,6 +51,14 @@ class DeepLinkRemoteJoinTest {
         assertEquals(listOf<ShellRoute>(ShellRoute.Tab(com.levi.pocketdj.navigation.PocketDjDestination.Jukebox)), routes)
         assertEquals("ABCD2345", d.takePendingRemoteJoin())
         assertNull(d.takePendingRemoteJoin())
+    }
+
+    @Test fun theParkedTargetCarriesWhichTransportTheInviterUsed() = kotlinx.coroutines.test.runTest {
+        val d = dispatcher(mutableListOf(), DeepLinkSeams(), { 0L }, backgroundScope)
+        d.handle(DeepLinkParser.parse("pocketdj://remote/join-net/ABCD2345"))
+        assertEquals("ABCD2345" to true, d.takePendingRemoteJoinTarget())
+        d.handle(DeepLinkParser.parse("pocketdj://remote/join/WXYZ2345"))
+        assertEquals("WXYZ2345" to false, d.takePendingRemoteJoinTarget())
     }
 
     @Test fun aStaleParkedInviteIsNotJoined() = kotlinx.coroutines.test.runTest {

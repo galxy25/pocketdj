@@ -39,6 +39,7 @@ import com.levi.pocketdj.data.burns.BurnFileNames
 import com.levi.pocketdj.mix.engine.StemHandover
 import com.levi.pocketdj.mix.model.Effect
 import com.levi.pocketdj.mix.model.MixRanges
+import com.levi.pocketdj.mix.nowplaying.DjDisplayTouch
 import com.levi.pocketdj.mix.nowplaying.NowPlayingDspHost
 import com.levi.pocketdj.mix.nowplaying.StemLock
 import com.levi.pocketdj.screens.mix.MixBufferingBadge
@@ -93,6 +94,8 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
     val djNote = if (com.levi.pocketdj.ParityFlags.DJ_MODE) {
         remember(tick, djState, seq, mixTabLive) { DjChipText.mixChipNote(djController.indicator(), null) }
     } else null
+    // P2-DJ-12: while DJ automation runs the controls SHOW the heard values (read-only; a touch acts on what is shown).
+    val display by host.engine.djDisplay.flow.collectAsState()
     val showsHeader = seq.isRunning
     val controlsVisible = ui.available || indicator is com.levi.pocketdj.mix.nowplaying.NpMixMode.Indicator.Buffering
 
@@ -116,6 +119,7 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
             NpDjModeSwitch(
                 on = djState.enabled, enabled = seq.isRunning,
                 onToggle = { on -> djController.setDjMode(on); if (on) expanded = true },
+                crossfade = if (display.active) display.crossfade.toFloat() else null,
             )
             NpMixModeSwitch(
                 on = mixState.enabled, enabled = seq.isRunning,
@@ -127,26 +131,40 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
             Modifier.then(if (ui.available) Modifier else Modifier.alpha(0.45f).blockTouches()),
         ) { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         run {
-            DspSlider("Tempo", DspPanelText.tempo(ui.rate), ui.rate, MixRanges.rate, "np-mix-tempo") { v -> touch { it.setRate(v) } }
-            DspSlider("Pitch", DspPanelText.pitch(ui.pitch), ui.pitch, MixRanges.pitch, "np-mix-pitch") { v -> touch { it.setPitch(v) } }
+            // The sliders follow the display while a transition runs; a drag sets the listener's value from the shown one and
+            // ends the glide (the engine's setRate / setPitch), so nothing jumps.
+            val shownRate = display.shownRate(ui.rate)
+            val shownPitch = display.shownPitch(ui.pitch)
+            DspSlider("Tempo", DspPanelText.tempo(shownRate), shownRate, MixRanges.rate, "np-mix-tempo") { v -> touch { it.setRate(v) } }
+            DspSlider("Pitch", DspPanelText.pitch(shownPitch), shownPitch, MixRanges.pitch, "np-mix-pitch") { v -> touch { it.setPitch(v) } }
             DspSlider("Gain", DspPanelText.gain(ui.volume), ui.volume, MixRanges.volume, "np-mix-gain") { v -> touch { it.setVolume(v) } }
+            // DJ's automatic leveling trim: read-only, separate from the listener's Gain.
+            DjLevelingReadoutRow(display.leveling)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Effects", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                 FxLockCapsule(ui.fxLock.enabled, ui.fxIndicator, onToggle = { host.setFxLock(!ui.fxLock.enabled) })
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 for (e in Effect.entries) {
+                    val shown = display.shownEffect(e, e in ui.effectsOn, ui.effectStrength[e] ?: 0.5)
                     FilterChip(
-                        selected = e in ui.effectsOn,
-                        onClick = { touch { it.setEffect(e, !it.isEnabled(e)) } },
+                        selected = shown.on,
+                        // a tap flips the SHOWN state: tapping a swept effect turns it off
+                        onClick = { touch { it.setEffect(e, DjDisplayTouch.tapTargetOn(shown)) } },
                         label = { Text(e.label, fontSize = 12.sp) },
                         modifier = Modifier.testTag("np-mix-fx-${e.raw}"),
                     )
                 }
             }
-            for (e in Effect.entries.filter { it in ui.effectsOn }) {
-                DspSlider("${e.label} amount", "${Math.round((ui.effectStrength[e] ?: 0.5) * 100)}%", ui.effectStrength[e] ?: 0.5, 0.0..1.0, "np-mix-fx-${e.raw}-strength") { v ->
-                    touch { it.setEffectStrength(e, v) }
+            for (e in Effect.entries) {
+                val shown = display.shownEffect(e, e in ui.effectsOn, ui.effectStrength[e] ?: 0.5)
+                if (!shown.on) continue
+                DspSlider("${e.label} amount", "${Math.round(shown.strength * 100)}%", shown.strength, 0.0..1.0, "np-mix-fx-${e.raw}-strength") { v ->
+                    touch {
+                        // a drag on a swept effect keeps it on: the listener's effect turns on first (that ends the glide)
+                        if (DjDisplayTouch.strengthDragNeedsEnable(shown, it.isEnabled(e))) it.setEffect(e, true)
+                        it.setEffectStrength(e, v)
+                    }
                 }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

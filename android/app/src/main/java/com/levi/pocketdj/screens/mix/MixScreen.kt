@@ -160,6 +160,8 @@ fun MixScreen(
             MixBroadcastButton(graph)
             recordAction()
         }
+        // P2-REM-13: "Mixing together" banner (renders only while a Mix Together session is live).
+        MixTogetherBannerHost(graph)
         st.autoBlockedReason?.let {
             Text(it, color = DeckColors.fg, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("mix-auto-blocked"))
         }
@@ -205,6 +207,7 @@ fun MixScreen(
                     host = host, layout = settings.mixDeckLayout, landscape = landscape,
                     onLoad = { vm.openLoader(it) },
                     beatPulseEnabled = settings.beatPulseEnabled,
+                    readOnlyDecks = rememberMixReadOnlyDecks(graph),
                     sourceMenu = { d ->
                         val src = if (d == Deck.A) st.sourceA else st.sourceB
                         MixCrateMenu(

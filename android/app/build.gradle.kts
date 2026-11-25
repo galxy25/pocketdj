@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.androidx.baselineprofile)
+    alias(libs.plugins.ksp)
 }
 
 // Release signing inputs (release plan A1/A3): environment first, then Gradle properties
@@ -11,6 +12,9 @@ plugins {
 fun releaseInput(name: String): String? =
     System.getenv(name)?.takeIf { it.isNotBlank() }
         ?: project.findProperty(name)?.toString()?.takeIf { it.isNotBlank() }
+
+// P2-SURF-12: the app module aggregates every @AppFunction into the generated app_functions*.xml the platform indexes.
+ksp { arg("appfunctions:aggregateAppFunctions", "true") }
 
 android {
     namespace = "com.levi.pocketdj"
@@ -191,6 +195,11 @@ dependencies {
 
     // QR generation for Jukebox Hero (jukebox.md §6.1) — pure-Java, offline.
     implementation(libs.zxing.core)
+    // P2-SOC-2: link-a-device QR scanner (CameraX preview + analysis; zxing decodes, no ML Kit).
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 
     // Apple Music for Android SDK (specs/applemusic.md §1). Vendored AARs — not
     // on Maven — wired as file dependencies (settings.gradle.kts sets
@@ -221,6 +230,11 @@ dependencies {
 
     // STU-2: Oboe low-latency output (prefab; linked from cpp/pdjdsp).
     implementation(libs.oboe)
+
+    // P2-SURF-12: AppFunctions (Gemini tools), runtime-gated on API 36+ (minSdk stays 35). The compiler is KSP.
+    implementation(libs.androidx.appfunctions)
+    implementation(libs.androidx.appfunctions.service)
+    ksp(libs.androidx.appfunctions.compiler)
 
     debugImplementation(libs.androidx.ui.tooling)
     androidTestImplementation(platform(libs.androidx.compose.bom))

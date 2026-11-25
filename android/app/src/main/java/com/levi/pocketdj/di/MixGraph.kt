@@ -373,6 +373,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         }
     }
     val mixEngine: MixEngine get() = engineLazy.value
+    /** P2-SURF-9: the Mix engine exists already (Auto surfaces read live controls only then; never builds it). */
+    fun engineBuilt(): Boolean = engineLazy.isInitialized()
 
     /**
      * A Remote CONTROLLER plays nothing here (P2-REM-6): stop whatever the Mix decks and the Now Playing DSP host are
@@ -380,8 +382,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      */
     fun silenceForRemoteController() {
         if (engineLazy.isInitialized()) {
-            val e = engineLazy.value
-            for (d in com.levi.pocketdj.mix.model.Deck.entries) if (e.isPlaying(d)) e.silence(d)
+            engineLazy.value.silenceForRemoteController()
         }
         if (npHostLazy.isInitialized()) {
             val dsp = npHostLazy.value.engine

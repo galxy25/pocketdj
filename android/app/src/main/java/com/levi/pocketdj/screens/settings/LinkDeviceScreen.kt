@@ -13,6 +13,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,7 +74,14 @@ internal fun linkDeviceSection() = SettingsSection(LINK_DEVICE_SECTION_ID, 51) {
     var message by remember { mutableStateOf<String?>(null) }
     var found by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var scanning by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
+    // A pocketdj://link/<code> deep link parks a validated code: fill the field and let the user press Link.
+    val pendingCode by com.levi.pocketdj.data.sync.LinkDeviceRequests.code.collectAsState()
+    LaunchedEffect(pendingCode) {
+        pendingCode?.let { input = it; message = null; found = false; scanning = false }
+        if (pendingCode != null) com.levi.pocketdj.data.sync.LinkDeviceRequests.consume()
+    }
 
     SettingsCaption("Show this device’s code, then type it (or scan it) on your other device.")
     OutlinedButton(
@@ -108,6 +116,14 @@ internal fun linkDeviceSection() = SettingsSection(LINK_DEVICE_SECTION_ID, 51) {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
+        if (scanning) {
+            QrScanner(
+                onCode = { code -> input = code; message = null; found = false; scanning = false },
+                onCancel = { scanning = false },
+            )
+        } else {
+            OutlinedButton(onClick = { scanning = true }, modifier = Modifier.testTag("link-scan")) { Text("Scan code") }
+        }
         OutlinedTextField(
             value = input,
             onValueChange = { input = it; message = null; found = false },

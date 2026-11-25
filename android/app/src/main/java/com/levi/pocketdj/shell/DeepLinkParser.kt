@@ -30,6 +30,12 @@ sealed interface DeepLink {
     /** `pocketdj://automix/<pocket|playlist|setlist>/<id>[?shuffle=1]` — start an Auto-DJ mix of a source. */
     data class AutoMix(val source: MixSource, val shuffle: Boolean) : DeepLink
 
+    /** `pocketdj://np/mixmode?on=1|0` — Now Playing's Mix Mode on/off (P2-SURF-10). */
+    data class NowPlayingMixMode(val on: Boolean) : DeepLink
+
+    /** `pocketdj://np/stem/<name>?mute=1|0` — mute / unmute one stem of the playing track (P2-SURF-10). */
+    data class NowPlayingStem(val stem: StemPart, val muted: Boolean) : DeepLink
+
     /** `pocketdj://{album,artist,playlist,pocket,setlist,search}/...` — open a screen. */
     data class Navigate(val route: ShellRoute) : DeepLink
 
@@ -40,10 +46,16 @@ sealed interface DeepLink {
     data class DiagKey(val uri: String) : DeepLink
 
     /** P2-REM-9: `pocketdj://remote/join/<token>` (the Nearby invite QR). */
-    data class RemoteJoin(val token: String) : DeepLink
+    data class RemoteJoin(val token: String, val internet: Boolean = false) : DeepLink
+
+    /** `pocketdj://create-pocket[?brief=...]` — build a pocket from a brief; no brief opens the Collections "Create pocket" sheet. */
+    data class CreatePocket(val brief: String?) : DeepLink
 
     /** One of our add/automix links whose target couldn't be resolved (e.g. a spoken name): surfaces [message]. */
     data class Unresolved(val message: String) : DeepLink
+
+    /** `pocketdj://link/<code>` / `pocketdj://link?code=<code>` — fill Settings > Link a device with a (checksum-valid) [code]. */
+    data class LinkDevice(val code: String) : DeepLink
 
     /** Not ours (OAuth redirects, unrelated https URLs, garbage). */
     data object None : DeepLink
@@ -154,11 +166,20 @@ object DeepLinkParser {
                 }
                 DeepLink.AutoMix(source, truthy(query["shuffle"]))
             }
+            "link" -> {
+                val raw = query["code"] ?: arg
+                val code = com.levi.pocketdj.screens.settings.LinkScan.extract("pocketdj://link" + (raw?.let { "?code=$it" } ?: ""))
+                if (raw == null) DeepLink.None
+                else code?.let { DeepLink.LinkDevice(it) } ?: DeepLink.Unresolved("That link code isn't valid. Check it and try again.")
+            }
+            "np" -> parseNowPlaying(parts, query)
+            "create-pocket", "createpocket" ->
+                DeepLink.CreatePocket((query["brief"] ?: query["q"])?.trim()?.takeIf { it.isNotEmpty() })
             "remote" -> when {
                 arg == null -> DeepLink.Remote(null)
-                arg.equals("join", ignoreCase = true) ->
+                arg.equals("join", ignoreCase = true) || arg.equals("join-net", ignoreCase = true) ->
                     parts.getOrNull(2)?.trim()?.takeIf { REMOTE_TOKEN_RE.matches(it) }
-                        ?.let { DeepLink.RemoteJoin(if (it.length <= 8) it.uppercase() else it) }
+                        ?.let { DeepLink.RemoteJoin(if (it.length <= 8) it.uppercase() else it, internet = arg.equals("join-net", ignoreCase = true)) }
                         ?: if (parts.getOrNull(2) == null) DeepLink.Remote(null) else DeepLink.None
                 else -> DeepLink.None
             }
@@ -177,6 +198,33 @@ object DeepLinkParser {
             }
             else -> DeepLink.None
         }
+    }
+
+    /** `np/mixmode?on=` and `np/stem/<name>?mute=`; a missing flag defaults to on / mute (the iOS intent defaults). */
+    private fun parseNowPlaying(parts: List<String>, query: Map<String, String>): DeepLink {
+        return when (parts.getOrNull(1)?.lowercase()) {
+            "mixmode" -> DeepLink.NowPlayingMixMode(
+                flag(query["on"], default = true) ?: return DeepLink.Unresolved("Couldn't tell whether to turn Mix Mode on or off."),
+            )
+            "stem" -> {
+                val raw = parts.getOrNull(2) ?: return DeepLink.None
+                val stem = StemPart.parse(raw)
+                    ?: return DeepLink.Unresolved("Couldn't tell which stem you meant — try vocals, drums, bass or other.")
+                DeepLink.NowPlayingStem(
+                    stem,
+                    flag(query["mute"], default = true) ?: return DeepLink.Unresolved("Couldn't tell whether to mute or unmute."),
+                )
+            }
+            else -> DeepLink.None
+        }
+    }
+
+    /** Explicit on/off synonyms only; anything unrecognized is null (never silently "on"). */
+    private fun flag(v: String?, default: Boolean): Boolean? = when (v?.trim()?.lowercase()) {
+        null, "" -> default
+        "0", "false", "off", "no", "disable", "disabled", "stop", "unmute" -> false
+        "1", "true", "on", "yes", "enable", "enabled", "start", "mute" -> true
+        else -> null
     }
 
     private inline fun nav(arg: String?, make: (String) -> ShellRoute): DeepLink =

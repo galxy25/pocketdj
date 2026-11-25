@@ -198,6 +198,7 @@ fun PocketDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        com.levi.pocketdj.shell.PinToHomeMenuItem(com.levi.pocketdj.shell.PlayKind.Pocket, pocketId, pocket.name, dismiss)
                         DropdownMenuItem(
                             text = { Text("Paste songs") },
                             enabled = clipboardHasSongs(context),

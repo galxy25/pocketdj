@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** What a Mix-tab node does (the `kind` token of [AutoId.Mix]). */
 enum class AutoMixKind(val token: String) {
@@ -35,6 +36,22 @@ enum class AutoMixKind(val token: String) {
     NOTE("note"),
     /** The parked (post-process-death) mix: tapping it brings the decks back and resumes. */
     PARKED("parked"),
+    /** Auto/Fx glide toggles (apply to the NEXT transition). */
+    FX_GLIDE("fxglide"),
+    AUDIO_GLIDE("audioglide"),
+    /** a = FX-rack slot index of the lead deck. */
+    FX_SLOT("fxslot"),
+    TEMPO_DOWN("tempodn"),
+    TEMPO_UP("tempoup"),
+    PITCH_DOWN("pitchdn"),
+    PITCH_UP("pitchup"),
+    STEMS("stems"),
+    /** a = stem name (vocals / drums / bass / other). */
+    STEM_MUTE("stemmute"),
+    /** Informational: the crate declares more songs than this device's catalog resolves. */
+    SHORTFALL("short"),
+    /** The QR image row of session a (content:// artwork). */
+    SESSION_QR("qr"),
     ;
 
     companion object {
@@ -73,6 +90,28 @@ data class AutoMixLive(
 /** What a parked mix shows in the car before it is materialized. */
 data class AutoParkedMix(val title: String?, val artist: String?, val label: String?)
 
+/** One FX-rack slot of the lead deck (label already "Effect · Variant"). */
+data class AutoFxSlot(val label: String, val enabled: Boolean)
+
+/**
+ * The lead deck's live controls (iOS CarPlayModel `mix*` accessors). Everything is scoped to the LEAD (now playing)
+ * deck; [inTransition] disables tempo and pitch. [shortfall] is (declared, total) when the catalog is short.
+ */
+data class AutoMixControls(
+    val fxGlide: Boolean = false,
+    val audioGlide: Boolean = false,
+    val slots: List<AutoFxSlot> = emptyList(),
+    val rate: Double = 1.0,
+    val pitch: Double = 0.0,
+    val inTransition: Boolean = false,
+    val stemsOn: Boolean = false,
+    val stemsLoading: Boolean = false,
+    val mutedStems: Set<String> = emptySet(),
+    val shortfall: Pair<Int, Int>? = null,
+    /** False when the engine is not built yet: glide values are unknown, so the glide rows are hidden (shortfall still shows). */
+    val glideKnown: Boolean = true,
+)
+
 data class AutoJukeSession(val id: String, val name: String, val timeless: Boolean, val url: String)
 
 /**
@@ -99,6 +138,19 @@ interface AutoMixExtras {
     fun parkedMix(): AutoParkedMix? = null
     /** The Mix-row gesture on a parked mix: materialize the decks, THEN resume (iOS CarPlayModel.materializeForGesture). */
     fun resumeParkedMix() {}
+    /** The lead deck's live controls; null when no mix is on air (setup shows only glide/shortfall via [setupControls]). */
+    fun controls(): AutoMixControls? = null
+    /** Glide toggles + catalog shortfall are meaningful before Start too. */
+    fun setupControls(): AutoMixControls? = null
+    fun setFxGlide(on: Boolean) {}
+    fun setAudioGlide(on: Boolean) {}
+    fun setSlot(index: Int, enabled: Boolean) {}
+    fun setRate(rate: Double) {}
+    fun setPitch(semitones: Double) {}
+    fun setStemMode(on: Boolean) {}
+    fun toggleStemMute(name: String) {}
+    /** A `content://` URI (FileProvider) of the QR image for [url], or null when it cannot be rendered. */
+    fun qrArtworkUri(url: String): String? = null
     /** Live broker sessions; null = unreachable / not configured. */
     suspend fun jukeboxSessions(): List<AutoJukeSession>?
 }
@@ -198,6 +250,8 @@ class AutoMixTab(
             mix(AutoMixKind.DECK, "b"), "Deck B", subtitle = deckB?.name ?: "Same as Deck A",
             browsable = true, childBrowsableStyle = AutoStyle.LIST, childPlayableStyle = AutoStyle.LIST,
         )
+        val c = extras.setupControls()
+        if (c != null && c.glideKnown) out += glideRows(c)
         out += AutoNode(
             mix(AutoMixKind.START), "▶ Start Mix",
             subtitle = if (a == null) "Pick Deck A first" else "Shuffled auto-mix",
@@ -206,6 +260,7 @@ class AutoMixTab(
         extras.downloadState()?.let { (done, total) ->
             out += AutoNode(mix(AutoMixKind.DOWNLOAD), "Downloading $done of $total", subtitle = "The mix starts when the first track lands")
         }
+        c?.shortfall?.let { out += shortfallRow(it) }
         return out
     }
 
@@ -227,6 +282,47 @@ class AutoMixTab(
             subtitle = "${extras.slowSkipSeconds.toInt()} second crossfade", playable = true,
         )
         out += AutoNode(mix(AutoMixKind.STOP), "⏹ Stop Mix", playable = true)
+        extras.controls()?.let { out += controlRows(it) }
+        return out
+    }
+
+    private fun onOff(b: Boolean) = if (b) "On" else "Off"
+
+    private fun shortfallRow(s: Pair<Int, Int>) = AutoNode(
+        mix(AutoMixKind.SHORTFALL), shortfallTitle(s.first, s.second), subtitle = SHORTFALL_DETAIL,
+    )
+
+    private fun glideRows(c: AutoMixControls) = listOf(
+        AutoNode(mix(AutoMixKind.FX_GLIDE), "FX Glide", subtitle = onOff(c.fxGlide), playable = true),
+        AutoNode(mix(AutoMixKind.AUDIO_GLIDE), "Audio Glide", subtitle = onOff(c.audioGlide), playable = true),
+    )
+
+    /** Live-only rows in iOS order: shortfall, Transitions (glides), FX, Tempo, Pitch, Stems. All scoped to the lead deck. */
+    private fun controlRows(c: AutoMixControls): List<AutoNode> {
+        val out = ArrayList<AutoNode>()
+        c.shortfall?.let { out += shortfallRow(it) }
+        out += glideRows(c)
+        c.slots.forEachIndexed { i, s ->
+            out += AutoNode(mix(AutoMixKind.FX_SLOT, i.toString()), "FX · ${s.label}", subtitle = onOff(s.enabled), playable = true)
+        }
+        val ok = !c.inTransition
+        val hold = if (ok) null else TRANSITION_HOLD
+        val pct = "${(c.rate * 100).roundToInt()}%"
+        out += AutoNode(mix(AutoMixKind.TEMPO_DOWN), "Tempo −", subtitle = hold ?: pct, playable = ok)
+        out += AutoNode(mix(AutoMixKind.TEMPO_UP), "Tempo +", subtitle = hold ?: pct, playable = ok)
+        val semis = "${c.pitch.roundToInt()}"
+        out += AutoNode(mix(AutoMixKind.PITCH_DOWN), "Pitch −", subtitle = hold ?: semis, playable = ok)
+        out += AutoNode(mix(AutoMixKind.PITCH_UP), "Pitch +", subtitle = hold ?: semis, playable = ok)
+        out += AutoNode(
+            mix(AutoMixKind.STEMS), "Stems", playable = true,
+            subtitle = if (c.stemsLoading) "Loading…" else onOff(c.stemsOn),
+        )
+        for ((name, label) in STEM_LABELS) {
+            out += AutoNode(
+                mix(AutoMixKind.STEM_MUTE, name), label, playable = true,
+                subtitle = if (name in c.mutedStems) "Muted" else "Unmuted",
+            )
+        }
         return out
     }
 
@@ -291,7 +387,12 @@ class AutoMixTab(
 
     private fun sessionChildren(id: String): List<AutoNode>? {
         val s = ((juke as? Juke.Loaded)?.sessions ?: lastSessions).firstOrNull { it.id == id } ?: return null
-        return listOf(AutoNode(mix(AutoMixKind.SESSION_URL, id), s.url, subtitle = "Join link — open it on your phone"))
+        val out = ArrayList<AutoNode>(2)
+        extras.qrArtworkUri(s.url)?.let {
+            out += AutoNode(mix(AutoMixKind.SESSION_QR, id), s.name.ifBlank { "Jukebox" }, subtitle = "Scan to join", artUrl = it)
+        }
+        out += AutoNode(mix(AutoMixKind.SESSION_URL, id), s.url, subtitle = "Join link — open it on your phone")
+        return out
     }
 
     /** Fetches at most once per [JUKE_REFRESH_MS]; notifies the Jukebox node only when the result changed. */
@@ -348,11 +449,37 @@ class AutoMixTab(
             }
             AutoMixKind.SKIP_FAST -> if (facade.autoMixing) extras.skipFast()
             AutoMixKind.SKIP_SLOW -> if (facade.autoMixing) extras.skipSlow()
+            AutoMixKind.FX_GLIDE -> { val c = (extras.setupControls()?.takeIf { it.glideKnown }) ?: extras.controls() ?: return null; extras.setFxGlide(!c.fxGlide) }
+            AutoMixKind.AUDIO_GLIDE -> { val c = (extras.setupControls()?.takeIf { it.glideKnown }) ?: extras.controls() ?: return null; extras.setAudioGlide(!c.audioGlide) }
+            AutoMixKind.FX_SLOT -> {
+                val c = liveControls() ?: return null
+                val i = id.a.toIntOrNull() ?: return null
+                val slot = c.slots.getOrNull(i) ?: return null
+                extras.setSlot(i, !slot.enabled)
+            }
+            AutoMixKind.TEMPO_DOWN, AutoMixKind.TEMPO_UP -> {
+                val c = liveControls()?.takeUnless { it.inTransition } ?: return null
+                extras.setRate(nudge(c.rate, if (id.kind == AutoMixKind.TEMPO_UP) TEMPO_STEP else -TEMPO_STEP))
+            }
+            AutoMixKind.PITCH_DOWN, AutoMixKind.PITCH_UP -> {
+                val c = liveControls()?.takeUnless { it.inTransition } ?: return null
+                extras.setPitch(c.pitch + if (id.kind == AutoMixKind.PITCH_UP) PITCH_STEP else -PITCH_STEP)
+            }
+            AutoMixKind.STEMS -> { val c = liveControls() ?: return null; extras.setStemMode(!c.stemsOn) }
+            AutoMixKind.STEM_MUTE -> {
+                val c = liveControls() ?: return null
+                if (id.a !in STEM_LABELS.map { it.first }) return null
+                if (!c.stemsOn) extras.setStemMode(true)   // TV/CarPlay one-tap semantics: a mute with stems off turns stems on first
+                extras.toggleStemMute(id.a)
+            }
             else -> return null
         }
         notifyMix()
         return null
     }
+
+    /** Controls only while a mix is actually on air (a stale row must not poke a parked / stopped engine). */
+    private fun liveControls(): AutoMixControls? = if (facade.autoMixing) extras.controls() else null
 
     private suspend fun start(): String? {
         val a = deckA ?: return "Pick Deck A first"
@@ -371,6 +498,16 @@ class AutoMixTab(
     companion object {
         val ROOT = AutoId.Mix(AutoMixKind.ROOT)
         const val FAST_SKIP_SECONDS = 5.0
+        const val TEMPO_STEP = 0.01
+        const val PITCH_STEP = 1.0
+        const val TRANSITION_HOLD = "Available between transitions"
+        const val SHORTFALL_DETAIL = "Rest not in this device's catalog yet — re-checks as it loads"
+        val STEM_LABELS = listOf("vocals" to "Vocals", "drums" to "Drums", "bass" to "Bass", "other" to "Other")
+
+        fun shortfallTitle(declared: Int, total: Int) = "Only $total of $declared songs available"
+
+        /** Tempo nudge rounded to 0.01 so repeated taps never drift (1.0 + 0.01 * n stays exact on the display). */
+        fun nudge(rate: Double, delta: Double): Double = Math.round((rate + delta) * 100.0) / 100.0
         const val JUKE_REFRESH_MS = 10_000L
         const val JUKE_UNREACHABLE = "Couldn't reach the jukebox server"
         const val JUKE_NONE = "No live sessions"

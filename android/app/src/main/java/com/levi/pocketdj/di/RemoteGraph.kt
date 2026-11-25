@@ -14,7 +14,10 @@ import com.levi.pocketdj.shell.FeatureModule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * Sidecar graph for the Remote area (P2-REM-5): the app-scoped [RemoteSessionController] and its collaborators.
@@ -62,12 +65,53 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.remote.NearbyRemoteStarter(app.appContext, controller, mainScope, ::deviceName)
     }
 
+    /** The configured jukebox server (url, account token), kept hot so the broker starter can answer `available` synchronously. */
+    val brokerServer: StateFlow<Pair<String, String>> by lazy {
+        app.settings.settings.map { it.jukeboxServerUrl.trim() to it.jukeboxToken }
+            .stateIn(mainScope, SharingStarted.Eagerly, "" to "")
+    }
+
+    /** P2-REM-10: the optional "Over the internet" starter (jukebox server `/remote` relay); offered only when a server URL is set. */
+    val brokerStarter: com.levi.pocketdj.remote.BrokerRemoteStarter by lazy {
+        com.levi.pocketdj.remote.BrokerRemoteStarter(
+            controller, mainScope,
+            com.levi.pocketdj.remote.BrokerApi(app.httpClient, { brokerServer.value.first }, { brokerServer.value.second }),
+            serverConfigured = { brokerServer.value.first.isNotBlank() }, deviceName = ::deviceName,
+        )
+    }
+
     /** DJ Mode's suspension input: a session is attached. */
     val probe: RemoteSessionProbe by lazy {
         object : RemoteSessionProbe {
             override val active: Boolean get() = controller.isActive.value
             override val activeFlow: StateFlow<Boolean> get() = controller.isActive
         }
+    }
+
+    private var mixSyncRef: com.levi.pocketdj.remote.mix.MixSync? = null
+
+    /** The Mix Together driver (P2-REM-13). Main thread; built the first time a session needs it (builds the Mix graph). */
+    val mixSync: com.levi.pocketdj.remote.mix.MixSync
+        get() = mixSyncRef ?: buildMixSync().also { mixSyncRef = it }
+
+    /** The driver if a session already built it; never constructs it. */
+    val mixSyncIfBuilt: com.levi.pocketdj.remote.mix.MixSync? get() = mixSyncRef
+
+    private fun buildMixSync(): com.levi.pocketdj.remote.mix.MixSync {
+        val mix = app.mixGraph
+        return com.levi.pocketdj.remote.mix.MixSync(
+            session = com.levi.pocketdj.remote.mix.RemoteControllerMixSession(controller),
+            clock = com.levi.pocketdj.remote.mix.ControllerClockPort(controller),
+            engine = com.levi.pocketdj.remote.mix.MixEnginePort(mix.mixEngine),
+            resolve = com.levi.pocketdj.remote.mix.MixTogetherInstaller.resolver(
+                loadables = { ids -> mix.mixResolver.loadables(ids) },
+                resolve = { row -> resolver.resolve(row) },
+            ),
+            appleMusicIdForSong = { id -> resolver.appleMusicIdForSong(id) },
+            onMixStarted = { controller.send(com.levi.pocketdj.remote.RemoteCommand.SetPlaying(false)) },
+            logSink = { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.REMOTE, it) },
+            scope = mainScope,
+        )
     }
 
     private var wired = false
@@ -88,5 +132,7 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
         controller.registerControllerSilencer { app.mixGraphIfBuilt?.silenceForRemoteController() }
         // Mixing together owns the decks: a running Auto-DJ ends and a new one is refused.
         MixTogetherBlock.onChanged = { app.mixGraph.autoDj.onAutoBlocked() }
+        // P2-REM-13: Mix Together (hello caps ["mix"], mix.* routing, live-mix election activity, the 250 ms tick), behind ParityFlags.MIX_TOGETHER.
+        com.levi.pocketdj.remote.mix.MixTogetherInstaller.install(controller, build = { mixSync }, ifBuilt = { mixSyncIfBuilt })
     }
 }

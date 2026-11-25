@@ -115,7 +115,7 @@ object RemoteSearch {
 }
 
 object RemoteJoinCode {
-    private val urlTail = Regex("""remote/join/([A-Za-z0-9_-]{4,64})/?(?:[?#].*)?$""")
+    private val urlTail = Regex("""remote/join(?:-net)?/([A-Za-z0-9_-]{4,64})/?(?:[?#].*)?$""")
     private val plain = Regex("""^[A-Za-z0-9_-]{4,64}$""")
 
     /** A typed code, a pasted `pocketdj://remote/join/<code>` (or https App Link), or null when it is neither. Short codes are upper-cased. */

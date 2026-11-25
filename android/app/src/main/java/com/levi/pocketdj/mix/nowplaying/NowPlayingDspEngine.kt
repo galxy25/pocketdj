@@ -22,6 +22,7 @@ import com.levi.pocketdj.mix.model.Effect
 import com.levi.pocketdj.mix.model.FXSlot
 import com.levi.pocketdj.mix.model.FxRack
 import com.levi.pocketdj.mix.model.MixRanges
+import com.levi.pocketdj.playback.dj.DjLeveling
 import com.levi.pocketdj.playback.dj.LevelRamper
 import com.levi.pocketdj.playback.durable.SessionFxSetting
 import kotlinx.coroutines.CoroutineScope
@@ -87,6 +88,8 @@ class NowPlayingDspEngine(
     /** Run the >= 50 Hz DJ ticker coroutine while a transition runs (off under test: the test calls [DjTransitionEngine.step]). */
     djTicker: Boolean = true,
 ) : NowPlayingDspSeam {
+
+    private val displaySampling = djTicker
 
     private val graph = MixGraph(sampleRate)
     private val composer = ParamsComposer(graph).also { it.setCrossfader(0f) }
@@ -583,13 +586,13 @@ class NowPlayingDspEngine(
     fun setRate(r: Double) {
         dj.listenerTouched()
         rate = r.coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
-        publishTempo(); onChanged?.invoke()
+        publishTempo(); onChanged?.invoke(); listenerChangedUnderAutomation()
     }
 
     fun setPitch(semitones: Double) {
         dj.listenerTouched()
         pitch = semitones.coerceIn(MixRanges.pitch.start, MixRanges.pitch.endInclusive)
-        publishTempo(); onChanged?.invoke()
+        publishTempo(); onChanged?.invoke(); listenerChangedUnderAutomation()
     }
 
     fun setVolume(v: Double) {
@@ -604,7 +607,7 @@ class NowPlayingDspEngine(
         dj.listenerTouched()
         slots[e.ordinal] = slots[e.ordinal].setEnabled(enabled)
         rampScale[e.ordinal] = 1.0; rampActive.remove(e)   // the listener's hand beats an FX Lock ramp-in
-        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke()
+        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke(); listenerChangedUnderAutomation()
     }
 
     fun setEffectStrength(e: Effect, strength: Double) {
@@ -612,7 +615,7 @@ class NowPlayingDspEngine(
         slots[e.ordinal] = slots[e.ordinal].setStrength(strength)
         strengthSet += e
         rampScale[e.ordinal] = 1.0; rampActive.remove(e)
-        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke()
+        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke(); listenerChangedUnderAutomation()
     }
 
     private fun publishSlots() {
@@ -912,7 +915,7 @@ class NowPlayingDspEngine(
     // One ramper per deck: a tail keeps ramping on ITS deck after a flip; a released deck's ramp is cancelled.
     private val rampers = arrayOfNulls<LevelRamper>(2)
     private fun levelRamper(d: Deck): LevelRamper =
-        rampers[d.ordinal] ?: LevelRamper(scope, composer.levelDb(d)) { composer.setLevelDb(d, it) }.also { rampers[d.ordinal] = it }
+        rampers[d.ordinal] ?: LevelRamper(scope, composer.levelDb(d)) { composer.setLevelDb(d, it); publishLevelReadout() }.also { rampers[d.ordinal] = it }
     private fun levelSet(d: Deck, db: Double) { levelRamper(d).set(db, false) }
 
     /** The incoming's leveling gain, landed over 150 ms by the commit flip (its fade gain is about 0 meanwhile). */
@@ -984,6 +987,7 @@ class NowPlayingDspEngine(
     /** COMMIT of the swap onto the incoming deck: bump the generation FIRST, then default controls on the new live deck. */
     internal fun djCommitFlip(to: LiveState) {
         handoverGen++            // before anything that can fire a completion (stale stem fetches must find it moved on)
+        outgoingLevelStatus = levelingStatus   // the readout's outgoing side (the host's advance re-sets the status for the incoming)
         stemHandover = null
         djInstall(to)
         cancelRamp()
@@ -1031,6 +1035,62 @@ class NowPlayingDspEngine(
 
     /** The audible playhead of the live deck's song, seconds (same as [currentTimeSec]). */
     internal fun djPosition(): Double = currentTimeSec
+
+    // ================================================================ automation display (P2-DJ-12; iOS publishDJDisplay)
+
+    /** What the controls show while DJ automation runs (read-only; the listener's own values are untouched). */
+    val djDisplay = DjDisplayHub()
+
+    private var levelingStatus = DjLeveling.Status.INACTIVE
+    private var outgoingLevelStatus = DjLeveling.Status.INACTIVE
+    private var displayJob: Job? = null
+
+    /** The host's leveling status for the CURRENT (live) song (the readout says it instead of a never-measured 0 dB). */
+    fun setLevelingStatus(status: DjLeveling.Status) { levelingStatus = status; publishDjDisplay() }
+
+    /** Automation drives what is heard beyond the listener's own controls. */
+    internal val djAutomating: Boolean get() = dj.phase != DjPhase.IDLE || dj.isEasing
+
+    /** A phase change / start / end of automation: publish now (and start or stop the ~16 Hz sampler). */
+    internal fun djAutomationChanged() = publishDjDisplay()
+
+    /** A listener control moved while automation runs: the display shows the NEW value at once, never the stale automated one. */
+    private fun listenerChangedUnderAutomation() { if (djAutomating || djDisplay.value.active) publishDjDisplay() }
+
+    private fun levelingNow(): DjLevelingReadout {
+        val phase = dj.phase
+        val cur = DjLevelSide(levelingStatus, composer.levelDb(deck))
+        val out = if (phase == DjPhase.FADING) DjLevelSide(outgoingLevelStatus, composer.levelDb(djOtherDeck())) else null
+        return DjDisplayMath.levelingReadout(phase, cur, out, dj.fadeProgress)
+    }
+
+    private fun publishLevelReadout() { djDisplay.publishLeveling(levelingNow()) }
+
+    private fun publishDjDisplay() {
+        if (!djAutomating) {
+            displayJob?.cancel(); displayJob = null
+            djDisplay.clear(levelingNow())
+            return
+        }
+        val phase = dj.phase
+        val ov = ownOv
+        val listenerFx = LinkedHashMap<Effect, Double>()
+        for (e in Effect.entries) if (isEnabled(e)) listenerFx[e] = strength(e)
+        djDisplay.publish(DjDisplay(
+            active = true,
+            rate = glidedRate(rate, ov),
+            pitch = DjDisplayMath.clampPitch(glidedPitch(pitch, ov)),
+            effects = DjDisplayMath.heardEffects(listenerFx, ov.texture),
+            crossfade = DjDisplayMath.crossfade(phase, dj.fadeProgress),
+            phase = DjDisplayMath.phaseName(phase, dj.isEasing),
+            leveling = levelingNow(),
+        ))
+        if (displaySampling && displayJob?.isActive != true) {
+            displayJob = scope.launch {
+                while (true) { delay(DjDisplayMath.INTERVAL_MS); publishDjDisplay() }
+            }
+        }
+    }
 
     /** A DJ fade start refused / a cut put the outgoing back: its voice keeps playing (never left the deck). */
     internal fun djVoiceOf(s: LiveState): Voice? = s.main
