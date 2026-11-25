@@ -118,7 +118,7 @@ tbody tr:last-child td{border-bottom:none}
 
 <main class="page">
 <h1>Privacy Policy</h1>
-<p class="effective">Effective date: October 29, 2026</p>
+<p class="effective">Effective date: November 25, 2026</p>
 
 <details class="toc" open>
   <summary>Contents</summary>
@@ -227,8 +227,8 @@ tbody tr:last-child td{border-bottom:none}
 <td>On the device only, in a file that is excluded from backups and never synced. Raw location samples are deleted after 30 days; each place keeps only a rounded centre point. Turning the setting off erases all of it. Only anonymous labels ever leave the device (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</td>
 </tr>
 <tr>
-<td><strong>Walking and running detection</strong> (only if you turn on "Notice walking &amp; running", iPhone only)</td>
-<td>The raw motion readings stay on the device. Only the resulting "walking" or "running" label can be uploaded, with listening pockets (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</td>
+<td><strong>Walking and running detection</strong> (only if you turn on "Notice walking &amp; running", on iPhone and Android)</td>
+<td>The raw motion readings stay on the device (on Android, a rolling 7-day record). Only the resulting "walking" or "running" label can be uploaded, with listening pockets (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</td>
 </tr>
 <tr>
 <td><strong>The owner identity check</strong>: a salted hash of your iCloud user id, used to decide whether two-way Apple Music favorites sync is permitted</td>
@@ -293,7 +293,7 @@ tbody tr:last-child td{border-bottom:none}
 <li><strong>On Android</strong> it uses Google Play services' location provider in a low-power mode: a location reading when you have moved a few hundred metres, plus a check about every 15 minutes so the app can tell that you have stayed somewhere. Android asks you first for location access while the app is in use, and then, separately, for access <strong>all the time</strong> ("Allow all the time"). Background access lets PocketDJ notice trips between your places while music plays with the screen off. You can keep foreground-only access, or turn the feature off, at any time.</li>
 </ul>
 <p>On both platforms, your places are numbered by how much time you spend at each (Location A, Location B, …) and are never identified as home, work, or an address. What is uploaded is the anonymous label for each play (a random place id, or a random trip id with its starting and ending place ids) and a summary of your places and trips: each place's "Location A"-style name and the share of your time spent there, and each trip's name (such as "A → B") and how many times you have made it. <strong>Your raw location never leaves your device</strong>, and PocketDJ does not send it to us or to anyone else.</p>
-<p><strong>Walking and running, if you turn it on (iPhone only).</strong> <strong>Settings ▸ Pocket Wheel ▸ Notice walking &amp; running</strong> is off by default. With your permission, it reads Apple's Motion &amp; Fitness activity on the device to tell whether you were walking or running while a song played. Only that label ("walking", "running", or "on a trip") travels with the play in your listening-pockets upload, and only while both this setting and listening pockets are on. The Android app does not read physical activity.</p>
+<p><strong>Walking and running, if you turn it on.</strong> <strong>Settings ▸ Pocket Wheel ▸ Notice walking &amp; running</strong> is off by default. With your permission (iPhone: Motion &amp; Fitness; Android: Physical activity), it reads your device's activity recognition on the device to tell whether you were walking or running while a song played. On Android, the raw readings are kept on the device for at most 7 days. Only that label ("walking", "running", or "on a trip") travels with the play in your listening-pockets upload, and only while both this setting and listening pockets are on.</p>
 <p><strong>The "In the Pocket" game.</strong> The game needs listening pockets on (it offers the same switch, and never turns it on for you). Each round, PocketDJ picks three or four songs it predicts you will play straight through, using the time of day, weekday or weekend, and, only if places &amp; trips is on, the anonymous label of the place or trip you are probably at. When a round ends, PocketDJ uploads it with your pockets data, as an example the analysis learns from: when it started (rounded down to the minute) and your time-zone offset, that context, the songs, what the prediction was based on, whether each song was played through or skipped, and, only if you give them, your 1–5 rating and the feedback you write (up to 2,000 characters). <strong>If you dictate feedback with the microphone button, the speech is turned into text on your device; the audio is never uploaded or kept, and only the text in the field is sent.</strong> We use rounds to improve how well pockets are predicted.</p>
 <p><strong>Turning things off.</strong> Turning the engine or pockets off stops all uploads, and also turns places &amp; trips off and erases your places from the device. Data already uploaded stays on our servers until you choose <strong>Delete cloud data</strong> (in Settings ▸ Recommendations) or delete your account (<a href="#13-deleting-your-data-and-your-account">§13</a>), so that turning a switch off and on again doesn't erase your history.</p>
 <h3 id="47-profile-sync-on-android-optional">4.7 Profile sync on Android (optional) <a class="anchor" href="#47-profile-sync-on-android-optional" aria-label="Permalink">#</a></h3>
@@ -329,7 +329,7 @@ tbody tr:last-child td{border-bottom:none}
 <li><strong>Location.</strong> Places &amp; trips (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>) gets location readings from Google Play services' location provider on your device. How Google handles location on your device is governed by your Android location settings and Google's privacy policy. PocketDJ does not send your location to Google or to us.</li>
 <li><strong>Backup.</strong> If Android backup is on, Android may back up some PocketDJ files (your collections and history) to <strong>your own</strong> Google account, under Google's terms. PocketDJ excludes your credentials, secrets, settings, places and trips, and game rounds from that backup. We cannot read your backups.</li>
 <li><strong>On-device speech.</strong> Dictating feedback uses Android's on-device speech recognizer with offline recognition only. The audio is not sent anywhere.</li>
-<li><strong>Permissions.</strong> PocketDJ asks for: location (only for places &amp; trips), microphone (only for Studio recording and dictation), notifications (playback controls and download progress), and nearby Bluetooth devices (only to connect MIDI controllers; PocketDJ does not use Bluetooth to find your location). It also uses Android's standard permissions for network access and for playing and downloading in the background. You can revoke any of them in Android Settings.</li>
+<li><strong>Permissions.</strong> PocketDJ asks for: location (only for places &amp; trips), microphone (only for Studio recording and dictation), notifications (playback controls and download progress), physical activity (only for the walking-and-running setting), and nearby devices over Bluetooth and Wi-Fi (only to connect MIDI controllers and for Listen Together and Backseat sessions with phones near you; PocketDJ does not use them to find your location). It also uses Android's standard permissions for network access and for playing and downloading in the background. You can revoke any of them in Android Settings.</li>
 </ul>
 <h2 id="7-microphone">7. Microphone <a class="anchor" href="#7-microphone" aria-label="Permalink">#</a></h2>
 <p>PocketDJ asks for microphone access for these things, and only when you start them:</p>
@@ -455,7 +455,7 @@ tbody tr:last-child td{border-bottom:none}
 <ul>
 <li><strong>Settings ▸ Profile</strong>: on Apple devices, turn iCloud sync off; on Android, profile sync (once available).</li>
 <li><strong>Settings ▸ Recommendations</strong>: the Recommendation Engine, listening pockets, and places &amp; trips each have their own switch. <strong>Delete cloud data</strong> erases what they uploaded, and <strong>Erase places &amp; trips</strong> erases your places on the device.</li>
-<li><strong>Settings ▸ Pocket Wheel ▸ Notice walking &amp; running</strong> (iPhone): on or off at any time.</li>
+<li><strong>Settings ▸ Pocket Wheel ▸ Notice walking &amp; running</strong> (iPhone and Android): on or off at any time.</li>
 <li><strong>Settings ▸ Apple Music</strong>: turn automatic playlist syncing off, or disconnect Apple Music.</li>
 <li><strong>Settings ▸ Storage</strong>: delete downloaded audio and recordings by artist, by collection, or all of it; set a storage cap.</li>
 <li><strong>Export</strong>: take your collections, playlists, and library out as a file at any time. That is your data-portability route, and it does not require asking us.</li>
@@ -469,7 +469,7 @@ tbody tr:last-child td{border-bottom:none}
 <li><strong>User content</strong>: your collections and their names, favorites, and feedback, if you turn on the Recommendation Engine or profile sync; "In the Pocket" feedback; jukebox request text; audio you send to an import server we operate, and what is derived from it.</li>
 <li><strong>Usage data</strong>: if you turn on the Recommendation Engine, play history, play counts, and, for listening pockets, whether each play was finished or skipped and its local time of day; the now-playing and queue state published while a jukebox session is live.</li>
 <li><strong>Approximate location labels</strong>: only if you turn on places &amp; trips: random place and trip ids, "Location A"-style names, each place's share of your time, and how often each trip was made. Never coordinates.</li>
-<li><strong>Fitness label</strong>: only if you turn on walking &amp; running (iPhone): whether you were walking or running during a play.</li>
+<li><strong>Fitness label</strong>: only if you turn on walking &amp; running (iPhone and Android): whether you were walking or running during a play.</li>
 <li><strong>Credentials in transit</strong>: your Apple Music user token, used for playlist sync and never stored.</li>
 <li><strong>Search data</strong>: Discover search terms, and online catalog queries if you turn that on.</li>
 <li><strong>Device and network data</strong>: the device name attached to each iCloud-synced record, and request metadata in server logs.</li>
@@ -611,7 +611,7 @@ tbody tr:last-child td{border-bottom:none}
 </tr>
 <tr>
 <td>Walking / running label</td>
-<td><strong>Yes</strong>, only while walking &amp; running is also on (iPhone)</td>
+<td><strong>Yes</strong>, only while walking &amp; running is also on (iPhone, Android)</td>
 <td>Same</td>
 <td>Same</td>
 </tr>
