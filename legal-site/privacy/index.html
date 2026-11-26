@@ -118,7 +118,7 @@ tbody tr:last-child td{border-bottom:none}
 
 <main class="page">
 <h1>Privacy Policy</h1>
-<p class="effective">Effective date: November 25, 2026</p>
+<p class="effective">Effective date: November 26, 2026</p>
 
 <details class="toc" open>
   <summary>Contents</summary>
@@ -329,7 +329,9 @@ tbody tr:last-child td{border-bottom:none}
 <li><strong>Location.</strong> Places &amp; trips (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>) gets location readings from Google Play services' location provider on your device. How Google handles location on your device is governed by your Android location settings and Google's privacy policy. PocketDJ does not send your location to Google or to us.</li>
 <li><strong>Backup.</strong> If Android backup is on, Android may back up some PocketDJ files (your collections and history) to <strong>your own</strong> Google account, under Google's terms. PocketDJ excludes your credentials, secrets, settings, places and trips, and game rounds from that backup. We cannot read your backups.</li>
 <li><strong>On-device speech.</strong> Dictating feedback uses Android's on-device speech recognizer with offline recognition only. The audio is not sent anywhere.</li>
-<li><strong>Permissions.</strong> PocketDJ asks for: location (only for places &amp; trips), microphone (only for Studio recording and dictation), notifications (playback controls and download progress), physical activity (only for the walking-and-running setting), and nearby devices over Bluetooth and Wi-Fi (only to connect MIDI controllers and for Listen Together and Backseat sessions with phones near you; PocketDJ does not use them to find your location). It also uses Android's standard permissions for network access and for playing and downloading in the background. You can revoke any of them in Android Settings.</li>
+<li><strong>Camera.</strong> When you tap "Scan code" to join a Listen Together or Backseat session or to link a device, PocketDJ uses the camera to read the QR code. Each frame is decoded on your device and thrown away. No picture or video is stored or sent anywhere; only the code that was read is used.</li>
+<li><strong>Assistant actions.</strong> On Android 16 and later, Google's assistant (Gemini) can ask PocketDJ to do things such as play a collection, add the current song to a playlist, or start Auto-Mix. Android passes PocketDJ only the action and the names it needs (for example, a playlist or song name), and PocketDJ carries it out on your device. PocketDJ does not send these requests to us. What you say or type to the assistant is handled by Google under <a href="https://policies.google.com/privacy">Google's privacy policy</a>.</li>
+<li><strong>Permissions.</strong> PocketDJ asks for: location (only for places &amp; trips), microphone (only for Studio recording and dictation), notifications (playback controls and download progress), physical activity (only for the walking-and-running setting), camera (only to scan a QR code), and nearby devices over Bluetooth and Wi-Fi (only to connect MIDI controllers and for Listen Together and Backseat sessions with phones near you; PocketDJ does not use them to find your location). It also uses Android's standard permissions for network access and for playing and downloading in the background. You can revoke any of them in Android Settings.</li>
 </ul>
 <h2 id="7-microphone">7. Microphone <a class="anchor" href="#7-microphone" aria-label="Permalink">#</a></h2>
 <p>PocketDJ asks for microphone access for these things, and only when you start them:</p>
@@ -555,6 +557,12 @@ tbody tr:last-child td{border-bottom:none}
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>Camera frames (Android QR scan)</td>
+<td><strong>No</strong></td>
+<td>Decoded on device, not stored</td>
+<td>—</td>
+</tr>
 <tr>
 <td>Microphone recordings and recorded mixes</td>
 <td><strong>No</strong>, unless you send one to an import server</td>
