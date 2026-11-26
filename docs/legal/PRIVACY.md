@@ -1,6 +1,6 @@
 # PocketDJ Privacy Policy
 
-**Effective date: November 25, 2026**
+**Effective date: November 26, 2026**
 
 <!--
 ================================================================================
@@ -13,6 +13,11 @@ This file is the source of https://legal.pocket-dj.com/privacy/. Build and deplo
 
 The build strips every HTML comment and stops at "## Appendix B", so Appendices B–D stay
 internal. Keep the effective-date line above in the form "**Effective date: <date>**".
+
+2026-11-26 revision (branch docs/privacy-android-camera-assistant): the Android 1.1.0 release
+adds a QR scanner (camera, for Remote invites and linking a device) and Gemini assistant actions
+(Android AppFunctions). Delta for legal review: §6 permissions sentence, new §6 "Camera" and
+"Assistant actions" bullets, Appendix A camera row.
 
 2026-11-25 revision (branch docs/privacy-android-motion-nearby): the Android app now reads
 physical activity (opt-in walking & running) and uses nearby devices for Listen Together /
@@ -209,7 +214,9 @@ These apply only to the Android app.
 - **Location.** Places & trips ([§4.6](#46-listening-history-recommendations-and-listening-pockets)) gets location readings from Google Play services' location provider on your device. How Google handles location on your device is governed by your Android location settings and Google's privacy policy. PocketDJ does not send your location to Google or to us.
 - **Backup.** If Android backup is on, Android may back up some PocketDJ files (your collections and history) to **your own** Google account, under Google's terms. PocketDJ excludes your credentials, secrets, settings, places and trips, and game rounds from that backup. We cannot read your backups.
 - **On-device speech.** Dictating feedback uses Android's on-device speech recognizer with offline recognition only. The audio is not sent anywhere.
-- **Permissions.** PocketDJ asks for: location (only for places & trips), microphone (only for Studio recording and dictation), notifications (playback controls and download progress), physical activity (only for the walking-and-running setting), and nearby devices over Bluetooth and Wi-Fi (only to connect MIDI controllers and for Listen Together and Backseat sessions with phones near you; PocketDJ does not use them to find your location). It also uses Android's standard permissions for network access and for playing and downloading in the background. You can revoke any of them in Android Settings.
+- **Camera.** When you tap "Scan code" to join a Listen Together or Backseat session or to link a device, PocketDJ uses the camera to read the QR code. Each frame is decoded on your device and thrown away. No picture or video is stored or sent anywhere; only the code that was read is used.
+- **Assistant actions.** On Android 16 and later, Google's assistant (Gemini) can ask PocketDJ to do things such as play a collection, add the current song to a playlist, or start Auto-Mix. Android passes PocketDJ only the action and the names it needs (for example, a playlist or song name), and PocketDJ carries it out on your device. PocketDJ does not send these requests to us. What you say or type to the assistant is handled by Google under [Google's privacy policy](https://policies.google.com/privacy).
+- **Permissions.** PocketDJ asks for: location (only for places & trips), microphone (only for Studio recording and dictation), notifications (playback controls and download progress), physical activity (only for the walking-and-running setting), camera (only to scan a QR code), and nearby devices over Bluetooth and Wi-Fi (only to connect MIDI controllers and for Listen Together and Backseat sessions with phones near you; PocketDJ does not use them to find your location). It also uses Android's standard permissions for network access and for playing and downloading in the background. You can revoke any of them in Android Settings.
 
 ---
 
@@ -436,6 +443,7 @@ Read this as the one-page version of §3 through §9.
 
 | Data | Leaves device? | Where to | Linked to you? |
 |---|---|---|---|
+| Camera frames (Android QR scan) | **No** | Decoded on device, not stored | — |
 | Microphone recordings and recorded mixes | **No**, unless you send one to an import server | Device only | — |
 | On-device speech transcripts and dictation | **No** | Device only | — |
 | Song recognition (Apple devices) | Signature only | Apple's Shazam service. Raw audio never sent. | No |
